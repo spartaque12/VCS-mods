@@ -75,6 +75,35 @@ the native projection and sprite writer against the game's, the `p2dfx` command 
 mod API has `register_function` (the fork's `vcs-mods` branch from 2026-10-31 on); an older one refuses it with a log
 line. "Alpha dual pass" (Graphics) is the renderer's, in `vcs.exe`.
 
+### JoltPhysics.asi - ragdolls, Euphoria-style hit reactions, dismemberment, pickups on the ground, foot IK, jiggle
+
+San Andreas' "[SA] Jolt Physics" mod re-implemented for VCS on Jolt Physics 5.6.0 (jrouwe/JoltPhysics, MIT; nothing of
+the SA mod used):
+- **Death ragdolls**: a ped that dies goes limp instead of playing its death animation - an 11-body ragdoll from the
+  pose and speed it had, pushed by the shot, blow, vehicle or blast that killed it - and lands on the world's own
+  collision (the buildings' and objects' col models near it, vehicles as moving boxes): down stairs and slopes, off
+  ledges, against walls. Bullets push bodies already down.
+- **Bike falls**: a rider thrown off a bike (Vic in a crash, a ped hit by a car or shot off it) tumbles as a ragdoll and
+  gets up where the body comes to rest.
+- **Hit reactions** (GTA IV / Euphoria style): a ped shot and not killed reacts with its body where the bullet hits - an
+  active ragdoll driven toward its animation -, clutches the wound, stumbles a few steps on a hard hit, and a hit that
+  knocks it down drops it as a ragdoll that **catches its fall** with its hands and, armed, **fires back blind** from the
+  ground, then gets up.
+- **Dismemberment**: a lethal shot, blade or blast can take a limb or the head off (the stump bleeds).
+- **Pickups on the ground** (after SA's "GTA IV Pickups On The Ground"): weapons and cash lie at their real size where
+  they fall (Jolt props), no spinning or glow.
+- **Foot IK**: Vic's and nearby peds' feet stand on slopes and stairs; **jiggle physics**: chest and hip springs.
+
+Settings (F2, Game page, "Physics"; keys in `vcs.ini`): `physics.ragdolls` Ragdolls (off; `VCS_JOLT=0/1`),
+`physics.ragdoll_force` Hit force (100 %), `physics.ragdoll_bikes` Bike falls, `physics.ragdoll_hits` Hit reactions,
+`physics.ragdoll_catch` Catch falls, `physics.ragdoll_blindfire` Fire back from the ground (these four on, with
+Ragdolls), `physics.gore` Dismemberment (off), `physics.pickups` Pickups on the ground (off), `physics.footik` /
+`physics.footik_npcs` Foot IK, `physics.jiggle` / `physics.jiggle_intensity` Jiggle physics. For tests:
+`VCS_JOLT_HOOKS=0` hooks nothing, `VCS_JOLT_WORLD=0` leaves the world out; control commands `jolt`, `footik`, `jiggle`
+(status; the port's `tools/ragdoll_check.py`, `ragdoll_world_check.py`, `hit_reactions_check.py`, `footik_check.py` ...).
+How it works: the port's docs/game-internals.md 12f - 12s. Install `JoltPhysics.asi` with `CameraAim.asi` if you use
+first person / free aim (it loads after it and chains its hooks to theirs).
+
 ### MeshSmooth.asi - smoother peds (and, experimental, vehicles)
 
 The idea of Zeneric's "Peds And Vehs Mesh Smoothed" for San Andreas, re-implemented for the port (nothing of it used):
@@ -130,11 +159,13 @@ reports and leaves the crosshair out if they differ.
 | `api/vcs_mod_api.h` | The mod API (a copy of the port's `src/modapi/vcs_mod_api.h`): what `vcs.exe` gives a mod, what a mod exports |
 | `plugins/common/` | `mod.h` / `mod.cpp`: the API glue every mod links (guest registers, settings, commands, log) |
 | `plugins/CameraAim/` | CameraAim.asi: `main.cpp` (the exports), `firstperson.cpp`, `freeaim.cpp`, `carglass.cpp` |
+| `plugins/JoltPhysics/` | JoltPhysics.asi: `main.cpp` (the exports), `jolt.cpp` (ragdolls, bike falls, hit reactions, gore, pickups), `footik.cpp`, `jiggle.cpp`, `physics/ragdoll.cpp` (the only code that sees Jolt) |
 | `plugins/Project2DFX/` | Project2DFX.asi: `main.cpp` (the exports), `project2dfx.cpp`, `ps2_float.h` (the EE's float maths, copied from the runtime) |
 | `plugins/MeshSmooth/` | MeshSmooth.asi: `main.cpp` (the exports), `meshsmooth.cpp` (the refiner, its cache, settings) |
 | `plugins/VR/` | VR.asi: `main.cpp` (the exports, settings, the present hook: copies, layers, head look), `xr.cpp` (OpenXR: loader, session, spaces, swapchains, frames), `shaders/vr_blit.hlsl`, `test/` (xr_test_runtime) |
 | `third_party/imgui/` | Dear ImGui 1.92.7-docking (MIT), the sources the port builds |
 | `third_party/openxr/` | The OpenXR headers (KhronosGroup/OpenXR-SDK release-1.1.65, Apache-2.0 OR MIT) |
+| `third_party/JoltPhysics/` | Jolt Physics 5.6.0 (MIT): `Jolt/` and `Build/` of the v5.6.0 tag, unmodified |
 
 Writing a mod: the port's docs/MODDING.md - the exports (`VcsModApiVersion`, `VcsModRegister`, `VcsModInstall`,
 `VcsModInstallLate`), the two hook phases, settings, hotkeys, the look handler, drawing. A new mod is a folder under
@@ -142,10 +173,10 @@ Writing a mod: the port's docs/MODDING.md - the exports (`VcsModApiVersion`, `Vc
 
 ## Next
 
-The Jolt Physics ragdolls and the streamed-file override (the ModLoader-style folder) with the Immersive Weapons Pack
-tools are still built into the port; they move here one by one.
+The streamed-file override (the ModLoader-style folder) with the Immersive Weapons Pack tools is still built into
+the port.
 
 ## Licence
 
-GPL-3.0, as the port (LICENSE). Dear ImGui is MIT (`third_party/imgui/LICENSE.txt`); Project2DFX's original is MIT
+GPL-3.0, as the port (LICENSE). Dear ImGui is MIT (`third_party/imgui/LICENSE.txt`), Jolt Physics MIT (`third_party/JoltPhysics/LICENSE`); Project2DFX's original is MIT
 (ThirteenAG/III.VC.SA.IV.Project2DFX).
