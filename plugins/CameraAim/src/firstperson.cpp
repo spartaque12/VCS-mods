@@ -112,7 +112,6 @@ namespace vcs::firstperson
         bool g_hideHead = false;  // the player's next draw collapses the head
         bool g_eyeValid = false;  // the eyes' offset from the ped's position, from its last draw
         float g_eye[3] = {};
-        const bool g_noFollow = std::getenv("VCS_FP_NOFOLLOW") != nullptr; // test switch
         uint32_t g_dbgTreeFrame = 0, g_dbgAfterFrame = 0, g_dbgDoneFrame = 0, g_dbgOurs = 0; // status
         float g_fpView[3][3] = {}; // first person's source, front, up this update (setFov makes it the frame's camera)
         uint32_t g_fpViewFrame = 0;
@@ -120,7 +119,12 @@ namespace vcs::firstperson
         uint32_t g_camHeadFrame = 0;
         constexpr float kBodyFollowMax = 0.8f;
         constexpr float kCabinHalfWidth = 0.42f, kCabinSoft = 0.35f; // m from a car's middle; past it the head moves 35% // m: the drawn body moved to the camera at most
-        float g_lastEye[3] = {}; // the eyes of the last update (jumps held out)
+        float g_lastEye[3] = {}, g_lastPed[3] = {};
+        uint32_t g_seatVehicle = 0; // the vehicle he last sat in and his head's height in it then
+        float g_seatHeadZ = 0.0f;
+        constexpr float kRoofAbove = 0.05f;  // m over the seated head: the roof's limit getting in and out
+        constexpr float kDoorReach = 0.45f;  // m past the cabin half width: the door opening, under the roof edge
+        constexpr uint32_t kPedStateDriving = 0x37u; // the eyes of the last update (jumps held out)
         bool g_lastEyeValid = false;
         uint32_t g_lastEyeFrame = 0, g_eyeHeld = 0;
         float g_eyeHead[3] = {kEyeForward, 0.0f, kEyeUp}; // the eyes from the head joint along its axes (world)
@@ -341,6 +345,11 @@ namespace vcs::firstperson
                            head ? g_headLocal[2] : kSeatEye[2] - kEyeUp};
             if (rd32(ram, veh + kVehicleType) == 0)
                 hl[0] = cabinX(hl[0]);
+            if (head && rd32(ram, ped + kPedState) == kPedStateDriving)
+            {
+                g_seatVehicle = veh; // seated: his head's height in it (the roof's limit getting in and out)
+                g_seatHeadZ = g_headLocal[2];
+            }
             const float el[3] = {hl[0] + g_eyeCm[0].load(std::memory_order_relaxed) / 100.0f,
                                  hl[1] + kEyeForward + g_eyeCm[1].load(std::memory_order_relaxed) / 100.0f,
                                  hl[2] + kEyeUp + g_eyeCm[2].load(std::memory_order_relaxed) / 100.0f};
@@ -567,10 +576,19 @@ namespace vcs::firstperson
                 if (const uint32_t veh = rd32(ram, ped + kPedVehicle); veh && g_headVehicle == veh && frame - g_headFrame <= 4u)
                 {
                     const uint32_t m = vehicleMatrix(ram, veh);
-                    const float hx0 = rd32(ram, veh + kVehicleType) == 0 ? cabinX(g_headLocal[0]) : g_headLocal[0];
+                    const bool car = rd32(ram, veh + kVehicleType) == 0;
+                    const float hx0 = car ? cabinX(g_headLocal[0]) : g_headLocal[0];
+                    // in a car's cabin the head kept under its roof: the anims stand him up through it getting out
+                    float hz0 = g_headLocal[2];
+                    if (car && std::fabs(g_headLocal[0]) < kCabinHalfWidth + kDoorReach)
+                    {
+                        const float roof = (g_seatVehicle == veh ? g_seatHeadZ : kSeatEye[2] - kEyeUp) + kRoofAbove;
+                        if (hz0 > roof)
+                            hz0 = roof + (hz0 - roof) * kCabinSoft;
+                    }
                     for (int i = 0; i < 3; ++i)
                         src[i] = rdf(ram, m + 0x30u + 4u * i) + rdf(ram, m + 4u * i) * hx0 +
-                                 rdf(ram, m + 0x10u + 4u * i) * g_headLocal[1] + rdf(ram, m + 0x20u + 4u * i) * g_headLocal[2];
+                                 rdf(ram, m + 0x10u + 4u * i) * g_headLocal[1] + rdf(ram, m + 0x20u + 4u * i) * hz0;
                     for (int i = 0; i < 3; ++i)
                         src[i] += g_eyeHead[i];
                     for (int i = 0; i < 3; ++i) // the head joint this view assumes: the draw brings it there (afterBones)
@@ -597,7 +615,11 @@ namespace vcs::firstperson
                 {
                     const float d[3] = {src[0] - g_lastEye[0], src[1] - g_lastEye[1], src[2] - g_lastEye[2]};
                     const bool jump = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > kEyeJump * kEyeJump;
-                    if (g_lastEyeValid && jump && g_eyeHeld < 3 && frame - g_lastEyeFrame <= 2u && rd32(ram, ped + kPedVehicle))
+                    // (on foot only the frame his position is set anew - out of a vehicle: the eyes from the last draw
+                    // are carried with a position the draw did not have)
+                    const float pj[3] = {px - g_lastPed[0], py - g_lastPed[1], pz - g_lastPed[2]};
+                    const bool snapped = pj[0] * pj[0] + pj[1] * pj[1] + pj[2] * pj[2] > kEyeJump * kEyeJump;
+                    if (g_lastEyeValid && jump && g_eyeHeld < 3 && frame - g_lastEyeFrame <= 2u && (rd32(ram, ped + kPedVehicle) || snapped))
                     {
                         std::copy(g_lastEye, g_lastEye + 3, src);
                         ++g_eyeHeld;
@@ -605,6 +627,7 @@ namespace vcs::firstperson
                     else
                         g_eyeHeld = 0;
                     std::copy(src, src + 3, g_lastEye);
+                    g_lastPed[0] = px, g_lastPed[1] = py, g_lastPed[2] = pz;
                     g_lastEyeValid = true;
                     g_lastEyeFrame = frame;
                 }
@@ -801,7 +824,7 @@ namespace vcs::firstperson
                     // before this draw, used the last one's: the drawn body is moved by the difference so the head is
                     // at the camera this frame (no gap between the view and the neck)
                     bool entering = false;
-                    if (!g_noFollow && g_hideHead && rd32(rdram, ped + kPedVehicle) && g_camHeadFrame && rd32(rdram, kFrameCounter) - g_camHeadFrame <= 1u)
+                    if (g_hideHead && rd32(rdram, ped + kPedVehicle) && g_camHeadFrame && rd32(rdram, kFrameCounter) - g_camHeadFrame <= 1u)
                     {
                         const float d[3] = {g_camHead[0] - hx, g_camHead[1] - hy, g_camHead[2] - hz};
                         if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < kBodyFollowMax * kBodyFollowMax)
