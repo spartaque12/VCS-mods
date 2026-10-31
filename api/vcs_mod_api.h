@@ -203,6 +203,32 @@ typedef struct VcsLitRefined
 /* The render worker's thread, once per batch drawn natively; NULL = draw the batch as it is. */
 typedef const VcsLitRefined *(*VcsLitRefineFn)(void *user, const VcsLitBatch *batch);
 
+/* VR (appended 2026-11-01, docs/MODDING.md "VR"; VR.asi, docs/VR_PLAN.md M0): a present hook runs on the main thread once
+ * per host frame, after the window's picture and menus are drawn and right before the window's frame is presented - where
+ * an OpenXR mod submits its frame and waits for the next (xrEndFrame / xrWaitFrame / xrBeginFrame). With
+ * render_set_split_layers on, the frame carries the game's picture without the HUD and the HUD alone. Textures are the
+ * graphics API's own (D3D11: ID3D11Texture2D *, DXGI_FORMAT_R8G8B8A8_UNORM, holding sRGB-encoded colour), valid inside the
+ * hook; NULL on other backends for now. A hook may use the immediate context; the renderer sets its state again. */
+typedef struct VcsPresentFrame
+{
+    uint32_t size;  /* sizeof(VcsPresentFrame) of this exe */
+    int backend;    /* VCS_RENDER_BACKEND_* */
+    void *device;   /* ID3D11Device * (D3D11), else NULL */
+    void *context;  /* ID3D11DeviceContext * (the immediate context) */
+    uint32_t window_width, window_height; /* the window's back buffer */
+    /* render_set_split_layers: the shown picture (post effects in) without the HUD, and the native HUD layer drawn over
+     * black and over white - coverage = 1 - (white - black), premultiplied colour = black - all layer_width x layer_height
+     * (the display's output size). NULL when the shown frame has none: a picture from CPU memory (loading screens), a
+     * black frame, splitting off. */
+    void *scene, *hud_black, *hud_white;
+    uint32_t layer_width, layer_height;
+    int has_3d;            /* the picture shows 3D (the recent frames drew it: not a menu / loading screen) */
+    int has_hud;           /* the HUD layer had draws */
+    uint64_t layer_serial; /* changes with every composed game frame that had layers */
+    int64_t input_ns;      /* std::chrono::steady_clock ns of the input snapshot the shown game frame was built from */
+} VcsPresentFrame;
+typedef void (*VcsPresentHookFn)(void *user, const VcsPresentFrame *frame);
+
 typedef struct VcsModApi
 {
     uint32_t version; /* VCS_MOD_API_VERSION */
@@ -252,6 +278,16 @@ typedef struct VcsModApi
     /* One refiner (the last set wins), any thread; fn NULL removes it. Called for batches the native lit draws take
      * (not those through the VU's clipper). */
     void (*set_lit_refiner)(VcsLitRefineFn fn, void *user);
+
+    /* -- VR (appended 2026-11-01, API 1; check with VCS_MOD_API_HAS(api, present_window_copy)) -------------------------- */
+    /* A present hook (VcsPresentFrame): main thread, any time; it stays until the game ends. 0 if refused. */
+    int (*add_present_hook)(VcsPresentHookFn fn, void *user);
+    /* The renderer keeps the picture without the HUD and the HUD alone for the present hooks (on = 1), or stops (0; the
+     * default: nothing extra is drawn). Any thread. */
+    void (*render_set_split_layers)(int on);
+    /* Inside a present hook: the window's picture and menus (F2, F5, Dear ImGui) as shown, rendered off-screen at
+     * width x height - D3D11: an ID3D11Texture2D * (RGBA8, sRGB-encoded), kept until the next call; NULL if none. */
+    void *(*present_window_copy)(uint32_t width, uint32_t height);
 } VcsModApi;
 
 /* Whether this exe's table has `field` (functions appended after a mod was built are NULL-checked this way). */

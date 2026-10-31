@@ -1,0 +1,7 @@
+{
+    "file_format_version": "1.0.0",
+    "runtime": {
+        "name": "VCS xr_test_runtime",
+        "library_path": "xr_test_runtime.dll"
+    }
+}

@@ -87,6 +87,24 @@ mesh - plate, dirt - show through), `meshsmooth.level` 1-2, `meshsmooth.strength
 (`controls.meshsmooth_key`). Control command `meshsmooth [on|off|reset]`: batches refined per kind, cache, build time.
 Needs a `vcs.exe` whose mod API has the lit refiner (`set_lit_refiner`); the port's check is `tools/meshsmooth_check.py`.
 
+### VR.asi - the game in an OpenXR headset (M0: mono, head-tracked first person)
+
+An OpenXR session on the game's D3D11 device, modelled on praydog/REFramework's OpenXR runtime code (MIT). In first
+person on foot (CameraAim.asi, key B) the view follows the head (yaw, pitch, roll; the stick / mouse still turn the
+body) and the 3D picture is shown at the game camera's field of view, where it was rendered, with the HUD on a panel
+below; menus, loading screens, cutscenes, third person and vehicles are on a "cinema" screen. Frames are paced by the
+headset. Install `VR.asi` **and `openxr_loader.dll`** (built next to it) into `build\scripts`, with a CameraAim.asi
+that exports `CameraAimSetHeadLook`; start the headset's OpenXR runtime (SteamVR, Meta Quest Link, Virtual Desktop,
+WMR ...), then F2 > Graphics > VR: `vr.enabled` (off; `VCS_VR=0/1`), `vr.view` (head-tracked / cinema), `vr.cinema_distance`
+(4 m), `vr.cinema_size` (5 m wide), `vr.hud_distance` (1.5 m); recentre with F7 (`controls.vr_recenter_key`) or
+Back + L3. Without a runtime or headset it logs one line (`[VR] ...: VR stays off`) and does nothing. Turn the
+window's vertical sync off (it would pace the loop to the monitor too). Control command `vr` (status; `vr recenter`).
+Needs a `vcs.exe` with the present hook (`add_present_hook`). Tests without a headset: `-DVR_TEST_RUNTIME=ON` builds
+`xr_test_runtime.dll` (`plugins/VR/test`), selected per run with `VCS_VR_RUNTIME=<path>`; it simulates a head
+(`XRTEST_HEAD`, `XRTEST_YAW_SWEEP`) and writes what each eye sees (`XRTEST_CAPTURE=<dir>`). The loader is built from
+KhronosGroup/OpenXR-SDK release-1.1.65 (FetchContent; `-DFETCHCONTENT_SOURCE_DIR_OPENXR_SDK=<dir>` offline;
+`-DVR_BUILD_OPENXR_LOADER=OFF` to bring your own).
+
 ## Building
 
 Windows, with Visual Studio's clang-cl (the C++ Clang tools) and CMake + Ninja, from a "x64 Native Tools" prompt:
@@ -114,7 +132,9 @@ reports and leaves the crosshair out if they differ.
 | `plugins/CameraAim/` | CameraAim.asi: `main.cpp` (the exports), `firstperson.cpp`, `freeaim.cpp`, `carglass.cpp` |
 | `plugins/Project2DFX/` | Project2DFX.asi: `main.cpp` (the exports), `project2dfx.cpp`, `ps2_float.h` (the EE's float maths, copied from the runtime) |
 | `plugins/MeshSmooth/` | MeshSmooth.asi: `main.cpp` (the exports), `meshsmooth.cpp` (the refiner, its cache, settings) |
+| `plugins/VR/` | VR.asi: `main.cpp` (the exports, settings, the present hook: copies, layers, head look), `xr.cpp` (OpenXR: loader, session, spaces, swapchains, frames), `shaders/vr_blit.hlsl`, `test/` (xr_test_runtime) |
 | `third_party/imgui/` | Dear ImGui 1.92.7-docking (MIT), the sources the port builds |
+| `third_party/openxr/` | The OpenXR headers (KhronosGroup/OpenXR-SDK release-1.1.65, Apache-2.0 OR MIT) |
 
 Writing a mod: the port's docs/MODDING.md - the exports (`VcsModApiVersion`, `VcsModRegister`, `VcsModInstall`,
 `VcsModInstallLate`), the two hook phases, settings, hotkeys, the look handler, drawing. A new mod is a folder under

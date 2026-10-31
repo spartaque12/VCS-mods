@@ -36,4 +36,11 @@ namespace vcs::firstperson
 
     // Game thread: radians to turn - yaw left (+), pitch up (+).
     void look(float yaw, float pitch);
+
+    // The VR mod's head look (VR.asi through the export CameraAimSetHeadLook, any thread): while on, first person on foot
+    // looks along the body's yaw (the mouse / stick) turned by the head's yaw, at the head's pitch (the mouse no longer
+    // pitches), rolled by its roll - radians, yaw left +, pitch up +, roll right +.
+    void setHeadLook(bool on, float yaw, float pitch, float roll);
+    // The last camera update was first person on foot with the head look (any thread).
+    bool headLookApplied();
 }

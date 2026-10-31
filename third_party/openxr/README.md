@@ -1,0 +1,1 @@
+OpenXR headers from [KhronosGroup/OpenXR-SDK](https://github.com/KhronosGroup/OpenXR-SDK) release-1.1.65, unmodified (SPDX: Apache-2.0 OR MIT). VR.asi loads `openxr_loader.dll` at run time; plugins/VR/CMakeLists.txt builds it from the same release (VR_BUILD_OPENXR_LOADER).

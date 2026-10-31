@@ -41,6 +41,14 @@ extern "C"
 
     VCS_MOD_EXPORT const char *VcsModName(void) { return "CameraAim"; }
 
+    // For other mods (GetProcAddress on CameraAim.asi): VR.asi's head look (firstperson.h setHeadLook); 1 = the last
+    // camera update applied it (first person on foot).
+    VCS_MOD_EXPORT void CameraAimSetHeadLook(int on, float yaw, float pitch, float roll)
+    {
+        vcs::firstperson::setHeadLook(on != 0, yaw, pitch, roll);
+    }
+    VCS_MOD_EXPORT int CameraAimHeadLookApplied(void) { return vcs::firstperson::headLookApplied() ? 1 : 0; }
+
     VCS_MOD_EXPORT int VcsModRegister(const VcsModApi *a)
     {
         if (!a || a->version != VCS_MOD_API_VERSION || !VCS_MOD_API_HAS(a, game_dir))

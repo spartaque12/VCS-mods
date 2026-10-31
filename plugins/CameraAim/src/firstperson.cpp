@@ -141,6 +141,13 @@ namespace vcs::firstperson
         float g_lookYaw = 0.0f, g_lookPitch = 0.0f;
 
         // for the control channel's "firstperson" (another thread)
+        // the VR mod's head look (setHeadLook, VR.asi): the head's yaw (left +) / pitch (up +) / roll (right +) about the
+        // body's view, radians; first person on foot only
+        std::mutex g_headMutex;
+        bool g_headOn = false;
+        float g_headYaw = 0.0f, g_headPitch = 0.0f, g_headRoll = 0.0f;
+        std::atomic<uint32_t> g_headAppliedFrame{0}; // the game frame (CTimer::m_FrameCounter + 1) first person on foot last took the head look
+
         struct Status
         {
             bool on = false;
@@ -557,7 +564,7 @@ namespace vcs::firstperson
             g_hideHead = first;
 
             const float px = rdf(ram, ped + kPedPosition), py = rdf(ram, ped + kPedPosition + 4), pz = rdf(ram, ped + kPedPosition + 8);
-            const float cy = std::cos(g_yaw), sy = std::sin(g_yaw), cp = std::cos(g_pitch), sp = std::sin(g_pitch);
+            const float cy = std::cos(viewYaw), sy = std::sin(viewYaw), cp = std::cos(viewPitch), sp = std::sin(viewPitch);
             const float front[3] = {cp * cy, cp * sy, sp};
             float src[3], dir[3], fov;
             if (first)
@@ -616,6 +623,22 @@ namespace vcs::firstperson
                     const float d[3] = {src[0] - g_lastEye[0], src[1] - g_lastEye[1], src[2] - g_lastEye[2]};
                     const bool jump = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > kEyeJump * kEyeJump;
                     // (on foot only the frame his position is set anew - out of a vehicle: the eyes from the last draw
+            // the VR mod's head look: the view is the body's yaw (mouse / stick) turned by the head; the head alone pitches
+            bool head = false;
+            float headYaw = 0.0f, headPitch = 0.0f, headRoll = 0.0f;
+            {
+                std::lock_guard<std::mutex> lock(g_headMutex);
+                head = g_headOn && first && mode == kModeFollowPed;
+                headYaw = g_headYaw, headPitch = g_headPitch, headRoll = g_headRoll;
+            }
+            if (head)
+            {
+                g_headAppliedFrame.store(rd32(ram, kFrameCounter) + 1u, std::memory_order_relaxed);
+                g_pitch = 0.0f;
+            }
+            const float viewYaw = head ? wrap(g_yaw + headYaw) : g_yaw;
+            const float viewPitch = head ? std::clamp(headPitch, -1.55f, 1.55f) : g_pitch;
+
                     // are carried with a position the draw did not have)
                     const float pj[3] = {px - g_lastPed[0], py - g_lastPed[1], pz - g_lastPed[2]};
                     const bool snapped = pj[0] * pj[0] + pj[1] * pj[1] + pj[2] * pj[2] > kEyeJump * kEyeJump;
@@ -665,7 +688,13 @@ namespace vcs::firstperson
             }
             // no roll: up from the view's own pitch
             const float h = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1]);
-            const float up[3] = {h > 1e-4f ? -dir[0] / h * dir[2] : 0.0f, h > 1e-4f ? -dir[1] / h * dir[2] : 0.0f, h};
+            float up[3] = {h > 1e-4f ? -dir[0] / h * dir[2] : 0.0f, h > 1e-4f ? -dir[1] / h * dir[2] : 0.0f, h};
+            if (head && headRoll != 0.0f) // the head's roll (VR): up tilted toward the view's right
+            {
+                const float right[3] = {sy, -cy, 0.0f}, cr = std::cos(headRoll), sr = std::sin(headRoll);
+                for (int i = 0; i < 3; ++i)
+                    up[i] = up[i] * cr + right[i] * sr;
+            }
             wrVec(ram, cam + kCamSource, src[0], src[1], src[2]);
             wrVec(ram, cam + kCamFront, dir[0], dir[1], dir[2]);
             wrVec(ram, cam + kCamUp, up[0], up[1], up[2]);
@@ -715,8 +744,8 @@ namespace vcs::firstperson
             }
             else
                 restoreNear(ram);
-            freeaim::frame(ram, ped, aiming, first ? freeaim::View::FirstPerson : freeaim::View::Aim, src, dir, g_yaw, g_pitch);
-            viewmodel::frame(ram, ped, first, mode == kModeLockOn, aiming, src, dir, g_yaw, g_pitch); // the arms in view
+            freeaim::frame(ram, ped, aiming, first ? freeaim::View::FirstPerson : freeaim::View::Aim, src, dir, viewYaw, viewPitch);
+            viewmodel::frame(ram, ped, first, mode == kModeLockOn, aiming, src, dir, viewYaw, viewPitch); // the arms in view
             publish();
             return true;
         }
@@ -1033,3 +1062,20 @@ namespace vcs::firstperson
         g_lookPitch += pitch;
     }
 }
+
+    void setHeadLook(bool on, float yaw, float pitch, float roll)
+    {
+        std::lock_guard<std::mutex> lock(g_headMutex);
+        g_headOn = on;
+        g_headYaw = std::isfinite(yaw) ? yaw : 0.0f;
+        g_headPitch = std::isfinite(pitch) ? pitch : 0.0f;
+        g_headRoll = std::isfinite(roll) ? roll : 0.0f;
+    }
+
+    bool headLookApplied()
+    {
+        // in one of the last few game frames (read on another thread: no flicker while an update runs)
+        const uint32_t at = g_headAppliedFrame.load(std::memory_order_relaxed);
+        const uint8_t *ram = mod::api->rdram();
+        return g_installed.load(std::memory_order_relaxed) && at && ram && rd32(ram, kFrameCounter) + 1u - at <= 3u;
+    }
