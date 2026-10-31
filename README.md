@@ -104,6 +104,35 @@ Ragdolls), `physics.gore` Dismemberment (off), `physics.pickups` Pickups on the 
 How it works: the port's docs/game-internals.md 12f - 12s. Install `JoltPhysics.asi` with `CameraAim.asi` if you use
 first person / free aim (it loads after it and chains its hooks to theirs).
 
+### RenderHook.asi - RenderHook-style graphics (ambient occlusion, sun shadows, DLAA)
+
+gtaRenderHook's features (the D3D11 renderer for GTA SA) rebuilt on the port's own renderer, through the mod API's
+render hooks - the same passes on D3D11 and Vulkan. The plan and what fits: the port's docs/RENDERHOOK_PLAN.md.
+- **Ambient occlusion**: ground-truth AO (GTAO, as in Intel's XeGTAO) from the game's own Z buffer, multiplied into the
+  3D picture after the whole scene (world, water, peds, vehicles) and before the game's bloom, trails and motion blur;
+  corners, creases, the ground under cars and people darken. Faded by the game's fog and out past ~350 m. Costs about
+  0.5-0.7 ms of GPU a frame at 1080p with 4x MSAA on an RTX 4070 Ti SUPER (0.05 ms at the original 640x448).
+
+Settings (F2, Graphics page, "Lighting (RenderHook)"): `renderhook.ao` Ambient occlusion: Off (original) / Subtle /
+Normal / Strong (`VCS_RH_AO=0..3`), `renderhook.ao_radius` Occlusion radius, 50-300 cm, default 120
+(`VCS_RH_AO_RADIUS`). With the option off the mod adds nothing to the renderer. Tests: `VCS_RH_AO_VIEW=1` shows the
+occlusion alone (grey); the control command `renderhook` reports frames, the camera and the depth mapping
+(`renderhook view 0|1`, `renderhook ao N`). Needs a `vcs.exe` whose mod API has the render hooks (2026-10-31 on); an
+older one refuses the mod with a log line.
+- **Sun shadows**: cascaded shadow maps of what the game draws, from the sun of the game's own timecycle (it moves with
+  the clock; nothing at night), multiplied into the 3D picture like the AO - buildings shade the streets, people and cars
+  cast and receive. About 0.2 ms of GPU at 1080p. Objects off screen cast none yet, and leaves cast their solid quads.
+  Settings (Graphics, "Lighting (RenderHook)"): `renderhook.shadows` Off / Soft / Normal / Dark (`VCS_RH_SHADOWS`),
+  `renderhook.shadow_distance` 50-400 m, `renderhook.shadow_quality` 1024 / 2048 / 4096; `VCS_RH_SHADOW_VIEW=1` or the
+  control command `rhshadow view 1` shows them alone. Needs a `vcs.exe` with `render_shadow_map` (2026-11-01 on).
+- **DLAA** (NVIDIA DLSS at native resolution): the picture after the AO, the game's depth and its motion vectors (the
+  camera's and the moving objects') and the renderer's jitter go to DLSS through NGX in the game's process; smooth, stable
+  edges. Needs an RTX card, D3D11 (the default backend), and a build with the DLSS SDK: configure with
+  `-DVCS_NGX_DIR=<folder with include\ and lib\ holding nvsdk_ngx_s.lib and nvngx_dlss.dll>` (NVIDIA's SDK,
+  github.com/NVIDIA/DLSS; not in this repository) and copy `nvngx_dlss.dll` with `RenderHook.asi`. Settings (Graphics,
+  "Anti-aliasing (RenderHook)"): `renderhook.dlaa` Off / On (`VCS_RH_DLAA`), `renderhook.dlaa_preset`; turn the game's
+  MSAA off with it. Control command `rhdlaa`.
+
 ### MeshSmooth.asi - smoother peds (and, experimental, vehicles)
 
 The idea of Zeneric's "Peds And Vehs Mesh Smoothed" for San Andreas, re-implemented for the port (nothing of it used):
@@ -147,6 +176,10 @@ cmake --build build
 checks `api/vcs_mod_api.h` against the port's `src/modapi/vcs_mod_api.h`, and `-DVCS_INSTALL_SCRIPTS=ON` copies each
 built mod into its `build\scripts`. Linux: the same with clang / clang++ (the mods are `.so` files there).
 
+Render mods' shaders (RenderHook) are built from HLSL by `vcs_mod_shader()`: DXBC with fxc from the Windows SDK (for
+D3D11) and SPIR-V with glslang (`glslangValidator` from the Vulkan SDK, or the glslang package on Linux; for Vulkan).
+Either may be missing: the mod then has no shaders for that graphics API and says so in the log.
+
 Why clang: hooks on the game's recompiled functions use its calling convention, clang's `preserve_none`
 (`VCS_GUEST_CC`). Why the vendored Dear ImGui (`third_party/imgui`, 1.92.7-docking, unmodified): the crosshair is drawn
 into the game's own ImGui context, so the mod must have the same version and layout - it checks the sizes the API
@@ -161,11 +194,12 @@ reports and leaves the crosshair out if they differ.
 | `plugins/CameraAim/` | CameraAim.asi: `main.cpp` (the exports), `firstperson.cpp`, `freeaim.cpp`, `carglass.cpp` |
 | `plugins/JoltPhysics/` | JoltPhysics.asi: `main.cpp` (the exports), `jolt.cpp` (ragdolls, bike falls, hit reactions, gore, pickups), `footik.cpp`, `jiggle.cpp`, `physics/ragdoll.cpp` (the only code that sees Jolt) |
 | `plugins/Project2DFX/` | Project2DFX.asi: `main.cpp` (the exports), `project2dfx.cpp`, `ps2_float.h` (the EE's float maths, copied from the runtime) |
+| `plugins/RenderHook/` | RenderHook.asi: `main.cpp` (the exports), `renderhook.cpp` (AO settings and passes), `temporal.cpp` (jitter, motion-vector views), `dlaa.cpp` (DLAA through NGX), `shadows.cpp` (sun shadows), `shaders/` |
 | `plugins/MeshSmooth/` | MeshSmooth.asi: `main.cpp` (the exports), `meshsmooth.cpp` (the refiner, its cache, settings) |
 | `plugins/VR/` | VR.asi: `main.cpp` (the exports, settings, the present hook: copies, layers, head look), `xr.cpp` (OpenXR: loader, session, spaces, swapchains, frames), `shaders/vr_blit.hlsl`, `test/` (xr_test_runtime) |
 | `third_party/imgui/` | Dear ImGui 1.92.7-docking (MIT), the sources the port builds |
-| `third_party/openxr/` | The OpenXR headers (KhronosGroup/OpenXR-SDK release-1.1.65, Apache-2.0 OR MIT) |
 | `third_party/JoltPhysics/` | Jolt Physics 5.6.0 (MIT): `Jolt/` and `Build/` of the v5.6.0 tag, unmodified |
+| `third_party/openxr/` | The OpenXR headers (KhronosGroup/OpenXR-SDK release-1.1.65, Apache-2.0 OR MIT) |
 
 Writing a mod: the port's docs/MODDING.md - the exports (`VcsModApiVersion`, `VcsModRegister`, `VcsModInstall`,
 `VcsModInstallLate`), the two hook phases, settings, hotkeys, the look handler, drawing. A new mod is a folder under

@@ -75,8 +75,65 @@ function(vcs_add_mod name)
     endif()
 endfunction()
 
+# Shaders of render mods (api/vcs_mod_api.h "Rendering"): one HLSL source, compiled at build time into headers - DXBC by
+# fxc (Windows SDK) for D3D11: shaders/dxbc/<name>.h, `const BYTE <name>[]`; SPIR-V by glslang (Vulkan SDK, or the
+# glslang package on Linux) for Vulkan: shaders/spirv/<name>.h, `const uint32_t <name>_spv[]`, with the port's bindings
+# (bN -> N, tN -> 16 + N, sN -> 32 + N, set 0). The target gets VCS_MOD_HAVE_DXBC / VCS_MOD_HAVE_SPIRV for the kinds built.
+#   vcs_mod_shader(<target> <file.hlsl> <entry> <vs_5_0|ps_5_0> <name> [NAME=VALUE defines...])
+if(WIN32)
+    file(GLOB _vcs_fxc_candidates "C:/Program Files (x86)/Windows Kits/10/bin/10.*/x64/fxc.exe")
+    list(SORT _vcs_fxc_candidates COMPARE NATURAL ORDER DESCENDING)
+    find_program(VCS_MOD_FXC fxc HINTS ${_vcs_fxc_candidates})
+endif()
+find_program(VCS_MOD_GLSLANG NAMES glslangValidator glslang HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin")
+function(vcs_mod_shader target source entry profile name)
+    set(src "${CMAKE_CURRENT_SOURCE_DIR}/${source}")
+    set(out "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+    if(VCS_MOD_FXC)
+        set(defines "")
+        foreach(d IN LISTS ARGN)
+            list(APPEND defines /D ${d})
+        endforeach()
+        add_custom_command(
+            OUTPUT "${out}/dxbc/${name}.h"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${out}/dxbc"
+            COMMAND "${VCS_MOD_FXC}" /nologo /O3 /T ${profile} /E ${entry} /Vn ${name} ${defines} /Fh "${out}/dxbc/${name}.h" "${src}"
+            DEPENDS "${src}"
+            COMMENT "fxc ${source} ${entry} -> ${name}"
+            VERBATIM)
+        target_sources(${target} PRIVATE "${out}/dxbc/${name}.h")
+        target_compile_definitions(${target} PRIVATE VCS_MOD_HAVE_DXBC=1)
+    endif()
+    if(VCS_MOD_GLSLANG)
+        string(SUBSTRING "${profile}" 0 2 kind)
+        if(kind STREQUAL "vs")
+            set(stage vert)
+        else()
+            set(stage frag)
+        endif()
+        set(defines "")
+        foreach(d IN LISTS ARGN)
+            list(APPEND defines -D${d})
+        endforeach()
+        # -D alone: the input is HLSL; the entry point is "main" in every module, as the port's tools/hlsl_spirv.py
+        add_custom_command(
+            OUTPUT "${out}/spirv/${name}.h"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${out}/spirv"
+            COMMAND "${VCS_MOD_GLSLANG}" -D -V --target-env vulkan1.3 --shift-texture-binding 16 --shift-sampler-binding 32
+                    -DVCS_SPIRV=1 ${defines} -S ${stage} -e main --source-entrypoint ${entry} --vn ${name}_spv
+                    -o "${out}/spirv/${name}.h" "${src}"
+            DEPENDS "${src}"
+            COMMENT "glslang ${source} ${entry} -> ${name}_spv"
+            VERBATIM)
+        target_sources(${target} PRIVATE "${out}/spirv/${name}.h")
+        target_compile_definitions(${target} PRIVATE VCS_MOD_HAVE_SPIRV=1)
+    endif()
+    target_include_directories(${target} PRIVATE "${out}")
+endfunction()
+
 add_subdirectory(plugins/CameraAim)
 add_subdirectory(plugins/JoltPhysics)
 add_subdirectory(plugins/Project2DFX)
+add_subdirectory(plugins/RenderHook)
 add_subdirectory(plugins/MeshSmooth)
 add_subdirectory(plugins/VR)

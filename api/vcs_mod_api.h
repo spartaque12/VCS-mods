@@ -163,6 +163,124 @@ typedef struct VcsModLookHandler
  * one-line answer ("ok ..." / "error ...") into `answer` on the main thread. */
 typedef void (*VcsModCommandFn)(void *user, const char *args, char *answer, size_t answer_size);
 
+/* Rendering (appended 2026-10-31, docs/MODDING.md "Rendering"): a mod's GPU passes inside the renderer. At a point of the
+ * frame the renderer calls the mod's render hook on the main thread with the frame's targets and camera; the hook draws
+ * full-screen passes with the render_* functions of VcsModApi - the port's RHI (src/rhi/rhi.h) as opaque handles, the
+ * same calls on D3D11 and Vulkan. Shaders are bytecode for the device's backend (VcsRenderFrame.backend): DXBC from fxc
+ * (vs_5_0 / ps_5_0) for D3D11, SPIR-V for Vulkan with the D3D registers as bindings (bN -> N, tN -> 16 + N, sN -> 32 + N,
+ * set 0: the port's tools/hlsl_spirv.py, glslang --shift-texture-binding 16 --shift-sampler-binding 32). */
+typedef struct VcsRenderTexture VcsRenderTexture; /* opaque */
+typedef struct VcsRenderBuffer VcsRenderBuffer;
+typedef struct VcsRenderPipeline VcsRenderPipeline;
+
+enum
+{
+    VCS_RENDER_BACKEND_D3D11 = 0,
+    VCS_RENDER_BACKEND_VULKAN = 1,
+    VCS_RENDER_BACKEND_NULL = 2 /* no GPU work (tests): resources may be NULL */
+};
+enum
+{
+    VCS_RENDER_FORMAT_RGBA8 = 1, /* 8-bit unorm */
+    VCS_RENDER_FORMAT_R32F = 2,  /* point sampling only (Vulkan does not promise linear filtering of it) */
+    VCS_RENDER_FORMAT_RGBA16F = 3 /* half floats (motion vectors); appended 2026-10-31 */
+};
+enum
+{
+    VCS_RENDER_SAMPLER_POINT = 0, /* clamped */
+    VCS_RENDER_SAMPLER_LINEAR = 1
+};
+enum
+{
+    VCS_RENDER_BLEND_OPAQUE = 0,   /* the output replaces the target */
+    VCS_RENDER_BLEND_MULTIPLY = 1, /* rgb = target.rgb * output.a (darkening: ambient occlusion, shadows) */
+    VCS_RENDER_BLEND_ALPHA = 2,    /* rgb = lerp(target.rgb, output.rgb, output.a) */
+    VCS_RENDER_BLEND_ADD = 3       /* rgb = target.rgb + output.rgb */
+};
+/* Where in the frame a hook runs. */
+enum
+{
+    /* the 3D scene is drawn - sky, world, water, peds, vehicles, blob shadows, particles - and the game's post effects
+     * (bloom, trails, motion blur) and the HUD come next */
+    VCS_RENDER_BEFORE_POST = 1
+};
+/* What a hook reads (add_render_hook's flags). */
+enum
+{
+    VCS_RENDER_NEEDS_DEPTH = 1u,         /* VcsRenderFrame.depth: the Z buffer made sampleable */
+    VCS_RENDER_NEEDS_RESOLVED_COLOR = 2u, /* VcsRenderFrame.color_resolved: the picture resolved (MSAA) to read */
+    VCS_RENDER_NEEDS_VELOCITY = 4u,       /* VcsRenderFrame.velocity: per-object motion (appended 2026-10-31) */
+    VCS_RENDER_NEEDS_SHADOW = 8u          /* render_shadow_map: the scene's casters kept (appended 2026-11-01) */
+};
+
+typedef struct VcsRenderFrame
+{
+    uint32_t size;    /* sizeof(VcsRenderFrame) of this exe */
+    int backend;      /* VCS_RENDER_BACKEND_* */
+    uint64_t frame;   /* frames the hooks ran in */
+    VcsRenderTexture *color;          /* the picture: RGBA8, multisampled when color_samples > 1 - draw into it */
+    VcsRenderTexture *color_resolved; /* single-sampled copy of it to read (VCS_RENDER_NEEDS_RESOLVED_COLOR), or NULL */
+    VcsRenderTexture *depth;          /* its Z buffer (VCS_RENDER_NEEDS_DEPTH), or NULL in the first frames: a float d =
+                                         GS z / 2^24 (0 = nothing drawn, far; larger = nearer); a Texture2DMS<float> when
+                                         depth_samples > 1 (declare it in VcsRenderPipelineDesc.multisampled_textures) */
+    uint32_t color_samples, depth_samples;
+    uint32_t width, height; /* the picture in target pixels, from (0, 0): the textures can be larger */
+    /* The camera, from the frame's 3D (camera_valid): the target pixel centre (x + 0.5, y + 0.5) at view depth w (metres)
+     * is the view-space point ((x + 0.5 - cx) / fx * w, (y + 0.5 - cy) / fy * w, w): x right, y down, w forward. */
+    int camera_valid;
+    float fx, fy, cx, cy;
+    /* The Z buffer: GS z = d / depth_scale = depth_a + depth_b / w, so w = depth_b / (d / depth_scale - depth_a). */
+    float depth_a, depth_b, depth_scale;
+    /* The game's distance fog on the world: visibility clamp((fog_bias + fog_scale * w) / 255, 0, 1) (1 = no fog). */
+    float fog_bias, fog_scale;
+    /* -- appended 2026-10-31 (check size >= offsetof(VcsRenderFrame, reproject) + sizeof(reproject)) -- temporal AA:
+     * the sub-pixel offset this frame's 3D was drawn with and the last frame's (target pixels; render_set_jitter), and
+     * the camera's reprojection (reproject_valid), row-major Q: (u' w', v' w', ., w') = Q (u w, v w, z w, w) with (u, v)
+     * this frame's unjittered target position (pixel centre - jitter), z the GS z, w the view depth; (u', v') is where
+     * that point was in the last frame, unjittered. Camera motion only (from static world draws): moving objects have no
+     * vectors of their own yet. */
+    float jitter_x, jitter_y, prev_jitter_x, prev_jitter_y;
+    int reproject_valid;
+    float reproject[16];
+    /* -- appended 2026-10-31 (check size >= offsetof(VcsRenderFrame, velocity) + sizeof(velocity)) -- per-object motion
+     * (VCS_RENDER_NEEDS_VELOCITY): RGBA16F, width x height: xy = the pixels the surface moved since the last frame
+     * (unjittered, now - then), z = its view depth, w = 1 where a native draw of a matched object covers the pixel, 0 where
+     * none does (use `reproject`). Compare z with the depth from `depth`: draws through the GS path are not in it. */
+    VcsRenderTexture *velocity;
+    /* -- appended 2026-11-01 (check size >= offsetof(VcsRenderFrame, world_to_view) + sizeof(world_to_view)) -- the
+     * camera's rotation in the world (view_valid), from the frame's static world draws: row-major, view = R world, world
+     * x east, y north, z up (metres), view as above (x right, y down, w forward). */
+    int view_valid;
+    float world_to_view[9];
+} VcsRenderFrame;
+
+typedef void (*VcsRenderHookFn)(void *user, const VcsRenderFrame *frame);
+
+enum
+{
+    VCS_RENDER_NATIVE_DEVICE = 0,  /* ID3D11Device * */
+    VCS_RENDER_NATIVE_CONTEXT = 1, /* ID3D11DeviceContext * (the immediate context) */
+    VCS_RENDER_NATIVE_TEXTURE = 2  /* ID3D11Texture2D * of the texture */
+};
+enum
+{
+    VCS_RENDER_TEXTURE_STORAGE = 1u /* unordered access (D3D11) / storage (Vulkan) */
+};
+
+/* A full-screen pass's pipeline: vertices from SV_VertexID (no vertex buffer), a triangle list, no depth test. */
+typedef struct VcsRenderPipelineDesc
+{
+    uint32_t size; /* sizeof(VcsRenderPipelineDesc) */
+    const void *vertex_code;
+    size_t vertex_size;
+    const void *pixel_code;
+    size_t pixel_size;
+    int blend;                      /* VCS_RENDER_BLEND_* */
+    uint32_t write_mask;            /* RGBA bits (0xF: all; 0x7 keeps the target's alpha) */
+    uint32_t multisampled_textures; /* texture slots (bit per slot) the pixel shader declares Texture2DMS */
+    const char *name;               /* debugger / GPU timing name */
+} VcsRenderPipelineDesc;
+
 /* Lit model geometry (appended 2026-10-31, docs/MODDING.md "Model geometry"): one VU1 batch of a lit model - a ped
  * (skinned), a vehicle body (rigid, environment-mapped) or another lit model (rigid: wheels, props, weapons) - as the
  * native draw (game/vcs_hle_world.cpp) gets it, before it is drawn: the uploaded VU data as integers, a triangle strip
@@ -274,10 +392,47 @@ typedef struct VcsModApi
     int (*register_function)(uint32_t address, VcsGuestFn fn);
     int (*has_function)(uint32_t address); /* a function (or a resume point) is there already */
 
+    /* -- rendering (appended 2026-10-31, API 1; check with VCS_MOD_API_HAS(api, render_pop_marker)) ------------- */
+    /* A render hook at a point of the frame (VCS_RENDER_BEFORE_POST), flags VCS_RENDER_NEEDS_*: the main thread, any time
+     * (a setting's on_change: until a hook is added nothing in the renderer changes); it stays until the game ends. 0 if
+     * refused. Hooks run in the order they were added. */
+    int (*add_render_hook)(int point, VcsRenderHookFn fn, void *user, uint32_t flags);
+    /* Inside a render hook only (the device's thread). Resources live until destroyed (or the game ends); a texture is a
+     * render target that can be sampled. NULL when refused. */
+    VcsRenderTexture *(*render_create_texture)(uint32_t width, uint32_t height, int format, const char *name);
+    void (*render_destroy_texture)(VcsRenderTexture *texture);
+    VcsRenderBuffer *(*render_create_constants)(uint32_t size, const char *name); /* a cbuffer, rewritten whole */
+    void (*render_update_constants)(VcsRenderBuffer *buffer, const void *data, uint32_t size);
+    void (*render_destroy_constants)(VcsRenderBuffer *buffer);
+    VcsRenderPipeline *(*render_create_pipeline)(const VcsRenderPipelineDesc *desc);
+    void (*render_destroy_pipeline)(VcsRenderPipeline *pipeline);
+    /* A pass into one texture (viewport and scissor: the whole texture); the pass a hook leaves open is ended for it. */
+    void (*render_begin_pass)(VcsRenderTexture *target);
+    void (*render_set_viewport)(int x, int y, int width, int height); /* the scissor too */
+    void (*render_set_pipeline)(VcsRenderPipeline *pipeline);
+    void (*render_set_texture)(uint32_t slot, VcsRenderTexture *texture, int sampler); /* VCS_RENDER_SAMPLER_*; slots 0..7 */
+    void (*render_set_constants)(uint32_t slot, VcsRenderBuffer *buffer);
+    void (*render_draw)(uint32_t vertex_count);
+    void (*render_end_pass)(void);
+    void (*render_push_marker)(const char *name); /* GPU time per marker with PS2X_GPU_TIMING=1 (D3D11) */
+    void (*render_pop_marker)(void);
+
     /* -- lit model geometry (appended 2026-10-31, API 1; check with VCS_MOD_API_HAS(api, set_lit_refiner)) -------- */
     /* One refiner (the last set wins), any thread; fn NULL removes it. Called for batches the native lit draws take
      * (not those through the VU's clipper). */
     void (*set_lit_refiner)(VcsLitRefineFn fn, void *user);
+
+    /* -- temporal AA (appended 2026-10-31, API 1; check with VCS_MOD_API_HAS(api, render_set_jitter)) ------------- */
+    /* The 3D picture's draws jittered by a Halton (2, 3) sequence of `phases` points, one per frame (0: off, the default);
+     * the offsets reach the render hooks in VcsRenderFrame. Main thread, any time. */
+    void (*render_set_jitter)(uint32_t phases);
+    /* Inside a hook, with no pass open: the picture as it is now, single-sampled (what earlier hooks drew included). */
+    VcsRenderTexture *(*render_current_color)(void);
+    /* The graphics API's own objects for an SDK that takes them (NVIDIA NGX): VCS_RENDER_NATIVE_*; NULL where the backend
+     * has none (Vulkan for now). Inside a hook; leave the device's state as found where possible. */
+    void *(*render_native)(int what, VcsRenderTexture *texture);
+    /* render_create_texture with VCS_RENDER_TEXTURE_* flags (STORAGE: written by such an SDK, e.g. DLSS's output). */
+    VcsRenderTexture *(*render_create_texture_ex)(uint32_t width, uint32_t height, int format, uint32_t flags, const char *name);
 
     /* -- VR (appended 2026-11-01, API 1; check with VCS_MOD_API_HAS(api, present_window_copy)) -------------------------- */
     /* A present hook (VcsPresentFrame): main thread, any time; it stays until the game ends. 0 if refused. */
@@ -288,6 +443,15 @@ typedef struct VcsModApi
     /* Inside a present hook: the window's picture and menus (F2, F5, Dear ImGui) as shown, rendered off-screen at
      * width x height - D3D11: an ID3D11Texture2D * (RGBA8, sRGB-encoded), kept until the next call; NULL if none. */
     void *(*present_window_copy)(uint32_t width, uint32_t height);
+
+    /* -- shadow maps (appended 2026-11-01, API 1; check with VCS_MOD_API_HAS(api, render_shadow_map)) ----------------- */
+    /* Inside a hook added with VCS_RENDER_NEEDS_SHADOW, no pass open: the scene's native draws that write Z (alpha-tested
+     * ones solid) drawn depth only into `count` (1..4) square viewports of `size` (64..4096) pixels
+     * side by side - a depth texture of size * count x size, NULL if refused. view_to_clip: count row-major 4x4 matrices
+     * from view space (VcsRenderFrame: x right, y down, w forward, metres) to clip space (x, y -1..1 with y up, z 0..1 with
+     * larger = nearer the light; cleared to 0). Draws through the GS path (geometry crossing the screen's guard band) and
+     * objects the game did not draw this frame (off screen) are not in it. `drawn` (may be NULL): draws drawn. */
+    VcsRenderTexture *(*render_shadow_map)(const float *view_to_clip, uint32_t count, uint32_t size, uint32_t *drawn);
 } VcsModApi;
 
 /* Whether this exe's table has `field` (functions appended after a mod was built are NULL-checked this way). */
