@@ -56,6 +56,25 @@ For tests: `VCS_FIRSTPERSON_HOOKS=0`, `VCS_FREEAIM_HOOKS=0`, `VCS_CARGLASS_HOOKS
 (the port's `tools/rig.py`) gets `firstperson`, `freeaim` and `carglass [0|1]` status commands. How the game's camera,
 aim and vehicle drawing work: the port's docs/game-internals.md 12b - 12e, 12o.
 
+### Project2DFX.asi - distant lights, stars, distant traffic
+
+The port's re-implementation of ThirteenAG's Project2DFX for VCS (the PCSX2-fork plugin, MIT):
+- **Distant lights**: the city's 4,423 street lamps, signs and traffic signals glow far away at night (LOD coronas).
+  Needs the plugin's light table, which is game data and not in this repository: the port's
+  `python tools/p2dfx.py import <GTAVCS.PCSX2F.Project2DFX.zip>` writes it to `p2dfx\lights.bin` beside `vcs.exe`.
+- **More stars** (500 more, fading with the clouds), **distant cars and boats** (simple models on the game's paths far
+  beyond its own traffic, lit at night), **draw distance** and **object detail distance** multipliers, and a **higher
+  flight ceiling** (800 m instead of 80 m).
+
+Settings (F2, Graphics page "Draw distance" / "Project2DFX", Game page "Flying"): `p2dfx.draw_distance`,
+`p2dfx.lod_distance`, `p2dfx.lights` (`VCS_DISTANT_LIGHTS`), `p2dfx.lights_range`, `p2dfx.lights_limit`,
+`p2dfx.lights_size`, `p2dfx.stars` (`VCS_MORE_STARS`), `p2dfx.cars` (`VCS_DISTANT_CARS`), `p2dfx.boats`
+(`VCS_DISTANT_BOATS`), `p2dfx.traffic_range`, `p2dfx.cars_max`, `p2dfx.boats_max`, `p2dfx.flight_ceiling`
+(`VCS_FLIGHT_CEILING`); all off / 1x by default. Tests: `VCS_P2DFX_HOOKS=0` hooks nothing, `VCS_P2DFX_VERIFY=1` checks
+the native projection and sprite writer against the game's, the `p2dfx` command reports counts. Needs a `vcs.exe` whose
+mod API has `register_function` (the fork's `vcs-mods` branch from 2026-10-31 on); an older one refuses it with a log
+line. "Alpha dual pass" (Graphics) is the renderer's, in `vcs.exe`.
+
 ## Building
 
 Windows, with Visual Studio's clang-cl (the C++ Clang tools) and CMake + Ninja, from a "x64 Native Tools" prompt:
@@ -65,7 +84,7 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang
 cmake --build build
 ```
 
-`build\plugins\CameraAim\CameraAim.asi` is the mod. With `-DVCS_RECOMP_DIR=<the port's folder>` the configure step
+`build\plugins\<Name>\<Name>.asi` are the mods. With `-DVCS_RECOMP_DIR=<the port's folder>` the configure step
 checks `api/vcs_mod_api.h` against the port's `src/modapi/vcs_mod_api.h`, and `-DVCS_INSTALL_SCRIPTS=ON` copies each
 built mod into its `build\scripts`. Linux: the same with clang / clang++ (the mods are `.so` files there).
 
@@ -79,7 +98,9 @@ reports and leaves the crosshair out if they differ.
 | Path | What |
 |---|---|
 | `api/vcs_mod_api.h` | The mod API (a copy of the port's `src/modapi/vcs_mod_api.h`): what `vcs.exe` gives a mod, what a mod exports |
-| `plugins/CameraAim/` | CameraAim.asi: `mod.cpp` (the exports, the API glue in `mod.h`), `firstperson.cpp`, `freeaim.cpp`, `carglass.cpp` |
+| `plugins/common/` | `mod.h` / `mod.cpp`: the API glue every mod links (guest registers, settings, commands, log) |
+| `plugins/CameraAim/` | CameraAim.asi: `main.cpp` (the exports), `firstperson.cpp`, `freeaim.cpp`, `carglass.cpp` |
+| `plugins/Project2DFX/` | Project2DFX.asi: `main.cpp` (the exports), `project2dfx.cpp`, `ps2_float.h` (the EE's float maths, copied from the runtime) |
 | `third_party/imgui/` | Dear ImGui 1.92.7-docking (MIT), the sources the port builds |
 
 Writing a mod: the port's docs/MODDING.md - the exports (`VcsModApiVersion`, `VcsModRegister`, `VcsModInstall`,
@@ -88,9 +109,10 @@ Writing a mod: the port's docs/MODDING.md - the exports (`VcsModApiVersion`, `Vc
 
 ## Next
 
-Project2DFX (distant lights, stars, distant traffic), the Jolt Physics ragdolls and the streamed-file override (the
-ModLoader-style folder) with the Immersive Weapons Pack tools are still built into the port; they move here one by one.
+The Jolt Physics ragdolls and the streamed-file override (the ModLoader-style folder) with the Immersive Weapons Pack
+tools are still built into the port; they move here one by one.
 
 ## Licence
 
-GPL-3.0, as the port (LICENSE). Dear ImGui is MIT (`third_party/imgui/LICENSE.txt`).
+GPL-3.0, as the port (LICENSE). Dear ImGui is MIT (`third_party/imgui/LICENSE.txt`); Project2DFX's original is MIT
+(ThirteenAG/III.VC.SA.IV.Project2DFX).

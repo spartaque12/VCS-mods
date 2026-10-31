@@ -55,13 +55,17 @@ target_include_directories(vcs_mod_api INTERFACE api)
 
 # A mod: a shared library named <name>.asi on Windows (lib-less <name>.so on Linux).
 function(vcs_add_mod name)
-    add_library(${name} SHARED ${ARGN})
+    add_library(${name} SHARED ${ARGN} "${CMAKE_SOURCE_DIR}/plugins/common/mod.cpp")
     target_link_libraries(${name} PRIVATE vcs_mod_api)
+    target_include_directories(${name} PRIVATE "${CMAKE_SOURCE_DIR}/plugins/common")
     if(WIN32)
         set_target_properties(${name} PROPERTIES PREFIX "" SUFFIX ".asi")
         target_compile_definitions(${name} PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+        # vcs.exe's float flags: no FP contraction (bit-exact game maths), AVX2
+        target_compile_options(${name} PRIVATE /arch:AVX2 /clang:-fno-math-errno /clang:-ffp-contract=off)
     else()
         set_target_properties(${name} PROPERTIES PREFIX "")
+        target_compile_options(${name} PRIVATE -mavx2 -fno-math-errno -ffp-contract=off)
     endif()
     if(VCS_RECOMP_DIR AND VCS_INSTALL_SCRIPTS)
         add_custom_command(TARGET ${name} POST_BUILD
@@ -72,3 +76,4 @@ function(vcs_add_mod name)
 endfunction()
 
 add_subdirectory(plugins/CameraAim)
+add_subdirectory(plugins/Project2DFX)

@@ -1,6 +1,6 @@
 // CameraAim.asi: first person (on foot and in vehicles), free aim, manual drive-by, the vehicle's glass hidden from
 // inside, the game cameras' field of view - the camera / aim mods of the VCS native port as one mod (README.md).
-// This file: the exports vcs.exe calls (api/vcs_mod_api.h) and the glue in mod.h.
+// This file: the exports vcs.exe calls (api/vcs_mod_api.h); the API glue is plugins/common/mod.cpp.
 #include "mod.h"
 
 #include "carglass.h"
@@ -9,88 +9,6 @@
 
 #include "imgui.h"
 #include "imgui_internal.h"
-
-#include <cstdarg>
-#include <cstdio>
-#include <memory>
-
-namespace mod
-{
-    const VcsModApi *api = nullptr;
-
-    void log(const char *format, ...)
-    {
-        char text[512];
-        va_list args;
-        va_start(args, format);
-        std::vsnprintf(text, sizeof(text), format, args);
-        va_end(args);
-        api->log(text);
-    }
-
-    namespace
-    {
-        // the Specs live as long as the game (their callbacks are called until it ends)
-        std::vector<std::unique_ptr<Spec>> g_specs;
-
-        void specChange(void *user, int v)
-        {
-            if (const Spec *s = static_cast<const Spec *>(user); s->onChange)
-                s->onChange(v);
-        }
-        int specRead(void *user) { return static_cast<const Spec *>(user)->read(); }
-
-        std::vector<std::unique_ptr<CommandHandler>> g_commands;
-
-        void command(void *user, const char *args, char *answer, size_t size)
-        {
-            const CommandHandler &h = *static_cast<const CommandHandler *>(user);
-            h(args ? args : "", [answer, size](const std::string &text) { std::snprintf(answer, size, "%s", text.c_str()); });
-        }
-    }
-
-    void add(Spec spec)
-    {
-        g_specs.push_back(std::make_unique<Spec>(std::move(spec)));
-        const Spec &s = *g_specs.back();
-        VcsModSetting c = {};
-        c.size = sizeof(c);
-        c.key = s.key.c_str();
-        c.page = s.page.c_str();
-        c.section = s.section.c_str();
-        c.label = s.label.c_str();
-        c.help = s.help.c_str();
-        c.type = static_cast<int>(s.type);
-        c.min = s.min;
-        c.max = s.max;
-        c.format = s.format.c_str();
-        c.default_value = s.defaultValue;
-        c.env = s.env.empty() ? nullptr : s.env.c_str();
-        c.apply = VCS_APPLY_LIVE;
-        c.on_change = &specChange;
-        c.read = s.read ? &specRead : nullptr;
-        c.user = g_specs.back().get();
-        if (!api->add_setting(&c))
-            log("[CameraAim] setting %s refused\n", s.key.c_str());
-    }
-
-    bool set(const std::string &key, int v) { return api->set_setting(key.c_str(), v) != 0; }
-
-    void addCommand(const std::string &verb, CommandHandler handler)
-    {
-        g_commands.push_back(std::make_unique<CommandHandler>(std::move(handler)));
-        api->add_command(verb.c_str(), &command, g_commands.back().get());
-    }
-
-    PadState lastPad()
-    {
-        VcsModPad p = {};
-        api->last_pad(&p);
-        return {p.buttons, p.lx, p.ly, p.rx, p.ry};
-    }
-
-    bool freecamFlying() { return api->freecam_flying() != 0; }
-}
 
 namespace
 {
@@ -125,7 +43,7 @@ extern "C"
 
     VCS_MOD_EXPORT int VcsModRegister(const VcsModApi *a)
     {
-        if (!a || a->version != VCS_MOD_API_VERSION || a->size < sizeof(VcsModApi))
+        if (!a || a->version != VCS_MOD_API_VERSION || !VCS_MOD_API_HAS(a, game_dir))
             return 0;
         mod::api = a;
 

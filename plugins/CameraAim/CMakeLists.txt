@@ -1,6 +1,6 @@
 # CameraAim.asi: first person (on foot, vehicles), free aim, manual drive-by, the car's glass from inside, field of view.
 vcs_add_mod(CameraAim
-    src/mod.cpp
+    src/main.cpp
     src/firstperson.cpp
     src/freeaim.cpp
     src/carglass.cpp

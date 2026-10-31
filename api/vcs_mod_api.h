@@ -18,6 +18,11 @@
  *                                                (this one's wrap theirs: e.g. a line-of-sight hook that changes a
  *                                                bullet's line before the ragdolls see it)
  *   const char *VcsModName(void);                optional: the name in the log (default: the file name)
+ *   int  VcsModRegisterSettings(const VcsModApi *api, const char *slot);
+ *                                                optional: settings rows registered at a later place of the menu than
+ *                                                VcsModRegister's (the Game page after "Window"). Slots: "graphics" -
+ *                                                after the Graphics page's renderer rows, before the controls pages
+ *                                                (where Project2DFX's rows were when built in). add_setting only.
  *
  * Versioning: VCS_MOD_API_VERSION changes only when something breaks old mods (a field moved or changed meaning);
  * the loader refuses a mod built for another version, with a log line. New functions are appended to VcsModApi
@@ -196,6 +201,12 @@ typedef struct VcsModApi
     void (*last_pad)(VcsModPad *out);
     int (*freecam_flying)(void); /* the trainer's free camera flies: leave the camera to it */
     const char *(*game_dir)(void); /* the folder of vcs.exe (UTF-8) */
+
+    /* -- appended 2026-10-31 (API 1; check with VCS_MOD_API_HAS) ----------------------------------------------- */
+    /* A host function at an address that has none - a continuation a guest tail call returns to (Install /
+     * InstallLate only). 0 if refused. */
+    int (*register_function)(uint32_t address, VcsGuestFn fn);
+    int (*has_function)(uint32_t address); /* a function (or a resume point) is there already */
 } VcsModApi;
 
 /* Whether this exe's table has `field` (functions appended after a mod was built are NULL-checked this way). */
@@ -206,6 +217,7 @@ typedef uint32_t (*VcsModApiVersionFn)(void);
 typedef int (*VcsModRegisterFn)(const VcsModApi *api);
 typedef int (*VcsModInstallFn)(const VcsModApi *api);
 typedef const char *(*VcsModNameFn)(void);
+typedef int (*VcsModRegisterSettingsFn)(const VcsModApi *api, const char *slot);
 
 #ifdef __cplusplus
 }

@@ -1,4 +1,4 @@
-// The plugin's side of the VCS mod API (api/vcs_mod_api.h): the API table, the guest context's registers, and C++
+// The mods' side of the VCS mod API (shared by every mod in plugins/) (api/vcs_mod_api.h): the API table, the guest context's registers, and C++
 // helpers that turn the API's C callbacks into the std::function style the camera code was written in (nothing of
 // the STL crosses into vcs.exe).
 #pragma once
@@ -17,7 +17,8 @@ namespace mod
 
     // ---- the guest context (the runtime's R5900Context, through the API's offsets) ------------------------------
     inline uint8_t *ctxBytes(VcsGuestContext *ctx) { return reinterpret_cast<uint8_t *>(ctx); }
-    inline uint32_t gpr32(VcsGuestContext *ctx, int reg)
+    inline const uint8_t *ctxBytes(const VcsGuestContext *ctx) { return reinterpret_cast<const uint8_t *>(ctx); }
+    inline uint32_t gpr32(const VcsGuestContext *ctx, int reg)
     {
         if (reg == 0)
             return 0;
@@ -35,6 +36,10 @@ namespace mod
     }
     inline void setPc(VcsGuestContext *ctx, uint32_t pc) { std::memcpy(ctxBytes(ctx) + api->ctx_pc_offset, &pc, 4); }
     inline float *fpr(VcsGuestContext *ctx) { return reinterpret_cast<float *>(ctxBytes(ctx) + api->ctx_fpr_offset); }
+    inline const float *fpr(const VcsGuestContext *ctx)
+    {
+        return reinterpret_cast<const float *>(ctxBytes(ctx) + api->ctx_fpr_offset);
+    }
 
     // ---- the game's log ----------------------------------------------------------------------------------------
     void log(const char *format, ...)
@@ -52,6 +57,11 @@ namespace mod
         Key = VCS_SETTING_KEY,
         Action = VCS_SETTING_ACTION,
     };
+    struct Choice
+    {
+        std::string label;
+        int value = 0;
+    };
     struct Spec
     {
         std::string key, page, section, label, help;
@@ -59,11 +69,12 @@ namespace mod
         int defaultValue = 0;
         int min = 0, max = 1;
         std::string format = "%d";
+        std::vector<Choice> choices;
         std::string env;
         std::function<void(int)> onChange;
         std::function<int()> read;
     };
-    void add(Spec spec);                     // VcsModRegister only
+    void add(Spec spec);                     // VcsModRegister / VcsModRegisterSettings only
     bool set(const std::string &key, int v); // false if refused (overridden by its environment variable)
 
     // ---- control-channel commands (as ps2control::addCommand; answered at once) ---------------------------------
