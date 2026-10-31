@@ -75,6 +75,18 @@ the native projection and sprite writer against the game's, the `p2dfx` command 
 mod API has `register_function` (the fork's `vcs-mods` branch from 2026-10-31 on); an older one refuses it with a log
 line. "Alpha dual pass" (Graphics) is the renderer's, in `vcs.exe`.
 
+### MeshSmooth.asi - smoother peds (and, experimental, vehicles)
+
+The idea of Zeneric's "Peds And Vehs Mesh Smoothed" for San Andreas, re-implemented for the port (nothing of it used):
+every lit model batch the port draws natively is refined on the host - PN triangles, each triangle split into 4 (level
+1) or 16 (level 2) - and cached per batch; peds are skinned with interpolated bone weights. Crack-free across the
+batches a model is cut into: edge curves depend only on the edge's positions and on normals shared by every user of a
+position. Settings (F2, Graphics page, "Mesh smoothing (MeshSmooth)"): `meshsmooth.enabled` (on; `VCS_MESHSMOOTH`),
+`meshsmooth.peds` (on), `meshsmooth.vehicles` and `meshsmooth.others` (off: layers the game draws over a car's original
+mesh - plate, dirt - show through), `meshsmooth.level` 1-2, `meshsmooth.strength` 0-150 %; key Insert
+(`controls.meshsmooth_key`). Control command `meshsmooth [on|off|reset]`: batches refined per kind, cache, build time.
+Needs a `vcs.exe` whose mod API has the lit refiner (`set_lit_refiner`); the port's check is `tools/meshsmooth_check.py`.
+
 ## Building
 
 Windows, with Visual Studio's clang-cl (the C++ Clang tools) and CMake + Ninja, from a "x64 Native Tools" prompt:
@@ -101,6 +113,7 @@ reports and leaves the crosshair out if they differ.
 | `plugins/common/` | `mod.h` / `mod.cpp`: the API glue every mod links (guest registers, settings, commands, log) |
 | `plugins/CameraAim/` | CameraAim.asi: `main.cpp` (the exports), `firstperson.cpp`, `freeaim.cpp`, `carglass.cpp` |
 | `plugins/Project2DFX/` | Project2DFX.asi: `main.cpp` (the exports), `project2dfx.cpp`, `ps2_float.h` (the EE's float maths, copied from the runtime) |
+| `plugins/MeshSmooth/` | MeshSmooth.asi: `main.cpp` (the exports), `meshsmooth.cpp` (the refiner, its cache, settings) |
 | `third_party/imgui/` | Dear ImGui 1.92.7-docking (MIT), the sources the port builds |
 
 Writing a mod: the port's docs/MODDING.md - the exports (`VcsModApiVersion`, `VcsModRegister`, `VcsModInstall`,

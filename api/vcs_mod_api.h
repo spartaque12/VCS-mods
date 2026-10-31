@@ -163,6 +163,46 @@ typedef struct VcsModLookHandler
  * one-line answer ("ok ..." / "error ...") into `answer` on the main thread. */
 typedef void (*VcsModCommandFn)(void *user, const char *args, char *answer, size_t answer_size);
 
+/* Lit model geometry (appended 2026-10-31, docs/MODDING.md "Model geometry"): one VU1 batch of a lit model - a ped
+ * (skinned), a vehicle body (rigid, environment-mapped) or another lit model (rigid: wheels, props, weapons) - as the
+ * native draw (game/vcs_hle_world.cpp) gets it, before it is drawn: the uploaded VU data as integers, a triangle strip
+ * of draw_count vertices (degenerate triangles join its runs). The real-space position is pos * pos_scale + pos_offset;
+ * normals are ints of length ~127 (rigid) / ~128 (skinned); uv are the V2-8 texture coordinates (the game's uv matrix
+ * applies); weights (skinned) are float bits whose low bits (bone_mask) pick the bone. */
+enum
+{
+    VCS_LIT_SKINNED = 0,
+    VCS_LIT_RIGID = 1,
+    VCS_LIT_ENV = 2 /* rigid with an environment map (vehicle paint) */
+};
+typedef struct VcsLitBatch
+{
+    uint32_t size; /* sizeof(VcsLitBatch) */
+    int kind;      /* VCS_LIT_* */
+    uint32_t count, draw_count;
+    const int32_t (*pos)[4];
+    const int32_t (*nrm)[4];
+    const int32_t (*uv)[4];
+    const uint32_t (*weights)[4]; /* skinned only, else NULL */
+    uint32_t bone_mask;
+    float pos_scale[4], pos_offset[4];
+} VcsLitBatch;
+/* A replacement for the batch: vertex_count vertices in the batch's units (floats), drawn as the triangle strip
+ * `indices` (index_count; degenerate triangles allowed). Valid until the refiner's next call; `key` identifies its
+ * content (the GPU's mesh cache). */
+typedef struct VcsLitRefined
+{
+    uint64_t key;
+    uint32_t vertex_count, index_count;
+    const float (*pos)[3];
+    const float (*nrm)[3];
+    const float (*uv)[3];
+    const uint32_t (*weights)[4]; /* skinned: the batch's encoding */
+    const uint16_t *indices;
+} VcsLitRefined;
+/* The render worker's thread, once per batch drawn natively; NULL = draw the batch as it is. */
+typedef const VcsLitRefined *(*VcsLitRefineFn)(void *user, const VcsLitBatch *batch);
+
 typedef struct VcsModApi
 {
     uint32_t version; /* VCS_MOD_API_VERSION */
@@ -207,6 +247,11 @@ typedef struct VcsModApi
      * InstallLate only). 0 if refused. */
     int (*register_function)(uint32_t address, VcsGuestFn fn);
     int (*has_function)(uint32_t address); /* a function (or a resume point) is there already */
+
+    /* -- lit model geometry (appended 2026-10-31, API 1; check with VCS_MOD_API_HAS(api, set_lit_refiner)) -------- */
+    /* One refiner (the last set wins), any thread; fn NULL removes it. Called for batches the native lit draws take
+     * (not those through the VU's clipper). */
+    void (*set_lit_refiner)(VcsLitRefineFn fn, void *user);
 } VcsModApi;
 
 /* Whether this exe's table has `field` (functions appended after a mod was built are NULL-checked this way). */

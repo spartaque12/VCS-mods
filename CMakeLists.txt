@@ -77,3 +77,4 @@ endfunction()
 
 add_subdirectory(plugins/CameraAim)
 add_subdirectory(plugins/Project2DFX)
+add_subdirectory(plugins/MeshSmooth)
