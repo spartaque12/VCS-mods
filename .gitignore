@@ -1,0 +1,10 @@
+build/
+/out/
+*.asi
+*.dll
+*.so
+*.pdb
+*.lib
+*.exp
+.vs/
+.vscode/
