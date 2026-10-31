@@ -4,6 +4,7 @@
 #include "carglass.h"
 #include "freeaim.h"
 #include "mod.h"
+#include "viewmodel.h"
 
 #include <algorithm>
 #include <atomic>
@@ -63,6 +64,8 @@ namespace vcs::firstperson
         constexpr float kPitchUp = 60.0f * kPi / 180.0f, kPitchDown = -80.0f * kPi / 180.0f; // UltimateFP's limits
         constexpr int kNearCm = 10;                          // the near plane (the game's 0.3 m cuts into the arms)
         constexpr float kEyeUp = 0.09f, kEyeForward = 0.075f; // the eyes from the head joint (the top of the neck)
+        constexpr float kEyeJump = 0.35f; // m in one update: held out
+        constexpr float kEyeAwayAhead = 0.15f; // m along the view per unit of (1 - view . body forward): 0.3 looking back
         // free aim's camera over the right shoulder: the pivot over the ped's position (its hips), the camera behind it
         // along the view, to its right and up a little; eased in and out from the game's camera
         constexpr float kAimPivotUp = 0.58f, kAimBack = 1.5f, kAimSide = 0.48f, kAimUp = 0.1f, kAimMinBack = 0.4f;
@@ -109,6 +112,10 @@ namespace vcs::firstperson
         bool g_hideHead = false;  // the player's next draw collapses the head
         bool g_eyeValid = false;  // the eyes' offset from the ped's position, from its last draw
         float g_eye[3] = {};
+        float g_lastEye[3] = {}; // the eyes of the last update (jumps held out)
+        bool g_lastEyeValid = false;
+        uint32_t g_lastEyeFrame = 0, g_eyeHeld = 0;
+        float g_eyeHead[3] = {kEyeForward, 0.0f, kEyeUp}; // the eyes from the head joint along its axes (world)
         uint32_t g_eyeFrame = 0;
         bool g_nearSaved = false; // the game's near plane, given back when first person ends
         uint32_t g_nearCamera = 0;
@@ -177,6 +184,7 @@ namespace vcs::firstperson
             g_hideHead = false;
             g_aimBlend = 0.0f;
             restoreNear(ram);
+            viewmodel::off(ram); // the arms the game's again
             if (g_on)
             {
                 g_on = false;
@@ -447,7 +455,9 @@ namespace vcs::firstperson
             else if (g_driveOn)
                 endDriveBy(ram); // out of the vehicle, under a script camera, another mode: the game's camera
             const bool onFoot = ped && rd32(ram, ped + kPedVehicle) == 0 && rd32(ram, kLooksAtPlayer) == 1;
-            const bool first = g_enabled && onFoot && (mode == kModeFollowPed || mode == kModeLockOn);
+            // first person on foot - and while getting in or out of a vehicle: the ped has it (+0x480) from the start of
+            // the enter anim to the end of the exit anim, the game's follow camera (mode 4) still on (game-internals.md 12t)
+            const bool first = g_enabled && ped && rd32(ram, kLooksAtPlayer) == 1 && (mode == kModeFollowPed || mode == kModeLockOn);
             // free aim (freeaim.h): R1 with a gun, the game's follow camera behind the player
             const bool aiming = onFoot && mode == kModeFollowPed && freeaim::wantsAim(ram, ped);
             const float step = std::clamp(rdf(ram, kTimeStep), 0.0f, 3.0f) / (50.0f * kAimBlendSeconds);
@@ -509,6 +519,17 @@ namespace vcs::firstperson
                     src[1] = py + g_eye[1];
                     src[2] = pz + g_eye[2];
                 }
+                // getting on or off a vehicle: the head joint kept in its space (a bike's rider is drawn in its lean
+                // matrix, off his own position while the anim plays)
+                if (const uint32_t veh = rd32(ram, ped + kPedVehicle); veh && g_headVehicle == veh && frame - g_headFrame <= 4u)
+                {
+                    const uint32_t m = vehicleMatrix(ram, veh);
+                    for (int i = 0; i < 3; ++i)
+                        src[i] = rdf(ram, m + 0x30u + 4u * i) + rdf(ram, m + 4u * i) * g_headLocal[0] +
+                                 rdf(ram, m + 0x10u + 4u * i) * g_headLocal[1] + rdf(ram, m + 0x20u + 4u * i) * g_headLocal[2];
+                    for (int i = 0; i < 3; ++i)
+                        src[i] += g_eyeHead[i];
+                }
                 // the settings' offset, along the ped's right / forward and up
                 const float ox = g_eyeCm[0].load(std::memory_order_relaxed) / 100.0f,
                             oy = g_eyeCm[1].load(std::memory_order_relaxed) / 100.0f,
@@ -516,6 +537,30 @@ namespace vcs::firstperson
                 for (int i = 0; i < 2; ++i)
                     src[i] += rdf(ram, ped + 4u * i) * ox + rdf(ram, ped + kPedForward + 4u * i) * oy;
                 src[2] += oz;
+                // looking away from where the body faces (running backwards or sideways the game turns him to the run):
+                // the eyes moved out along the view, ahead of the collar and shoulders that would fill the picture
+                {
+                    const float fx = rdf(ram, ped + kPedForward), fy = rdf(ram, ped + kPedForward + 4);
+                    const float away = 1.0f - std::clamp(fx * cy + fy * sy, -1.0f, 1.0f); // 0 ahead .. 2 behind
+                    src[0] += cy * kEyeAwayAhead * away;
+                    src[1] += sy * kEyeAwayAhead * away;
+                }
+                // a jump of the eyes in one update (the frame a rider gets off a bike: his position and the drawn
+                // skeleton disagree for a frame or two) is held out, three updates at most
+                {
+                    const float d[3] = {src[0] - g_lastEye[0], src[1] - g_lastEye[1], src[2] - g_lastEye[2]};
+                    const bool jump = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > kEyeJump * kEyeJump;
+                    if (g_lastEyeValid && jump && g_eyeHeld < 3 && frame - g_lastEyeFrame <= 2u)
+                    {
+                        std::copy(g_lastEye, g_lastEye + 3, src);
+                        ++g_eyeHeld;
+                    }
+                    else
+                        g_eyeHeld = 0;
+                    std::copy(src, src + 3, g_lastEye);
+                    g_lastEyeValid = true;
+                    g_lastEyeFrame = frame;
+                }
                 std::copy(front, front + 3, dir);
                 fov = static_cast<float>(g_fov.load(std::memory_order_relaxed));
             }
@@ -598,6 +643,7 @@ namespace vcs::firstperson
             else
                 restoreNear(ram);
             freeaim::frame(ram, ped, aiming, first ? freeaim::View::FirstPerson : freeaim::View::Aim, src, dir, g_yaw, g_pitch);
+            viewmodel::frame(ram, ped, first, mode == kModeLockOn, aiming, src, dir, g_yaw, g_pitch); // the arms in view
             publish();
             return true;
         }
@@ -650,6 +696,10 @@ namespace vcs::firstperson
                     g_eye[0] = dx + fx * kEyeForward;
                     g_eye[1] = dy + fy * kEyeForward;
                     g_eye[2] = dz + kEyeUp;
+                    // the eyes along the head's own axes (x up the head, y forward): getting on or off a vehicle he leans
+                    // and ducks, and world up / the view's ahead from the joint put them in his chest
+                    for (int i = 0; i < 3; ++i)
+                        g_eyeHead[i] = rdf(rdram, head + 4u * i) * kEyeUp + rdf(rdram, head + 0x10u + 4u * i) * kEyeForward;
                     g_eyeFrame = rd32(rdram, kFrameCounter);
                     g_eyeValid = true;
                     // in a vehicle: the head joint in its space (its matrix rows are orthonormal)
@@ -668,6 +718,7 @@ namespace vcs::firstperson
                             g_headFrame = g_eyeFrame;
                         }
                     }
+                    viewmodel::apply(rdram, ped, bones); // first person: the arms and gun in view (viewmodel.h)
                     if (g_hideHead)
                         for (uint32_t b : {kHeadBone, kHeadEndBone})
                             for (uint32_t row = 0; row < 3; ++row)
@@ -762,6 +813,8 @@ namespace vcs::firstperson
             add(s);
         }
 
+        viewmodel::registerSettings(); // the arms and gun in view
+
         s = {};
         s.key = "camera.first_person_vehicle";
         s.page = "Game";
@@ -809,6 +862,7 @@ namespace vcs::firstperson
         mod::api->replace_function(kAfterBones, &afterBones);
         mod::api->replace_function(kSetFov, &setFov);
         g_installed = true;
+        viewmodel::install();
         // firstperson -> ok on= looking= yaw= pitch= tree= eye= (tests: tools/rig.py firstperson)
         mod::addCommand("firstperson", [](const std::string &, mod::Reply reply) {
             Status st;

@@ -4,5 +4,6 @@ vcs_add_mod(CameraAim
     src/firstperson.cpp
     src/freeaim.cpp
     src/carglass.cpp
+    src/viewmodel.cpp
 )
 target_link_libraries(CameraAim PRIVATE vcs_mod_imgui)
