@@ -4,6 +4,7 @@
 #include "carglass.h"
 #include "freeaim.h"
 #include "mod.h"
+#include "reload.h"
 #include "viewmodel.h"
 
 #include <algorithm>
@@ -817,6 +818,7 @@ namespace vcs::firstperson
             const uint32_t cam = mod::gpr32(ctx, 4);
             if (cam != kCams + rdram[kActiveCam] * kCamSize)
                 return g_origHeight(rdram, ctx, runtime);
+            reload::update(rdram); // the reload key, on the game thread (reload.h)
             if (mod::freecamFlying())
             {
                 endDriveBy(rdram); // the free camera's (the head shown, the game's near plane, the windows)
@@ -1038,6 +1040,7 @@ namespace vcs::firstperson
         }
 
         viewmodel::registerSettings(); // the arms and gun in view
+        reload::registerSettings();    // manual reload (its own section) and its key
 
         s = {};
         s.key = "camera.first_person_vehicle";
