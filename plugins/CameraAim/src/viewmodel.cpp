@@ -45,6 +45,10 @@ namespace vcs::viewmodel
         constexpr float kStride = 1.5f, kBob = 0.006f;                              // m per cycle, m at walking pace
         constexpr float kShoulder[3] = {0.19f, 0.08f, -0.30f}; // m: the right shoulder in the view (the left mirrored)
         constexpr float kMaxPull = 0.12f;      // m: the gun drawn back for the left hand's reach, at most
+        // at rest (not aiming): the hand lower, back and a little in, the barrel down and inward; raised while R1 /
+        // the right mouse button aims or the gun fires, eased like UltimateFP's ADS (200 ms up, 180 ms down)
+        constexpr float kRestOffset[3] = {-0.03f, -0.03f, -0.06f}, kRestPitch = -0.30f, kRestYaw = 0.22f; // m, rad
+        constexpr float kAdsUp = 0.20f, kAdsDown = 0.18f, kAdsUpFiring = 0.08f;                          // s
         constexpr float kRecoilBack = 0.04f, kRecoilUp = 0.012f, kRecoilTurn = 0.10f, kRecoilTime = 0.07f; // m, m, rad, s
         constexpr float kPoleOut = 0.5f;       // the elbows' bend: out (right / left) for each 1 down
 
@@ -73,6 +77,7 @@ namespace vcs::viewmodel
         float g_refPos[3] = {};  // the fore-grip (status)
         float g_pull = 0.0f;     // the gun drawn back this draw (m)
         float g_recoil = 0.0f;   // 1 at a shot, decaying
+        float g_ads = 0.0f;      // 0 the gun at rest (low ready) .. 1 raised to the crosshair (aiming, firing)
         int32_t g_clip = -1;     // the gun's rounds in the clip, last update
         bool g_twoHanded = false; // the left hand on the gun too (status)
         float g_blend = 0.0f;    // 0 the game's arms .. 1 ours
@@ -323,9 +328,9 @@ namespace vcs::viewmodel
             char text[400];
             std::snprintf(text, sizeof(text),
                           "ok enabled=%d active=%d type=%d blend=%.2f ref=%.3f,%.3f,%.3f hand=%.3f,%.3f,%.3f barrel=%.4f pull=%.3f "
-                          "sway=%.3f,%.3f applied=%u ax=%.2f,%.2f,%.2f ay=%.2f,%.2f,%.2f az=%.2f,%.2f,%.2f",
+                          "ads=%.2f sway=%.3f,%.3f applied=%u ax=%.2f,%.2f,%.2f ay=%.2f,%.2f,%.2f az=%.2f,%.2f,%.2f",
                           g_enabled ? 1 : 0, st.active ? 1 : 0, st.type, st.blend, st.ref[0], st.ref[1], st.ref[2], st.hand[0],
-                          st.hand[1], st.hand[2], st.barrel, g_pull, st.sway[0], st.sway[1], st.applied, st.axes[0][0], st.axes[0][1], st.axes[0][2],
+                          st.hand[1], st.hand[2], st.barrel, g_pull, g_ads, st.sway[0], st.sway[1], st.applied, st.axes[0][0], st.axes[0][1], st.axes[0][2],
                           st.axes[1][0], st.axes[1][1], st.axes[1][2], st.axes[2][0], st.axes[2][1], st.axes[2][2]);
             reply(text);
         });
@@ -393,6 +398,14 @@ namespace vcs::viewmodel
             g_recoil = 1.0f;
         g_clip = clip;
         g_recoil *= std::exp(-g_dt / kRecoilTime);
+        // raised while aiming (free aim's R1, locked on) or attacking (firing from the hip: up fast)
+        {
+            const uint32_t state = rd32(ram, ped + kPedState);
+            const bool firing = state == kStateAttack || state == kStateFight || g_recoil > 0.05f;
+            const bool raise = aiming || lockedOn || firing;
+            const float t = raise ? (firing && !aiming && !lockedOn ? kAdsUpFiring : kAdsUp) : kAdsDown;
+            g_ads = std::clamp(g_ads + (raise ? 1.0f : -1.0f) * g_dt / t, 0.0f, 1.0f);
+        }
     }
 
     void off(uint8_t *ram)
@@ -563,6 +576,23 @@ namespace vcs::viewmodel
         for (int i = 0; i < 3; ++i)
             z0[i] -= x0[i] * zx;
         normalise(z0);
+        // at rest: lowered and turned down / in (smoothstep of the aim's share)
+        {
+            const float a = g_ads * g_ads * (3.0f - 2.0f * g_ads), rest = 1.0f - a;
+            for (int i = 0; i < 3; ++i)
+                pos[i] += kRestOffset[i] * rest;
+            const float yw = kRestYaw * rest, pt = kRestPitch * rest;
+            const float cyw = std::cos(yw), syw = std::sin(yw), cpt = std::cos(pt), spt = std::sin(pt);
+            for (float *v : {x0, z0})
+            {
+                const float y1 = v[1] * cpt - v[2] * spt, z1 = v[1] * spt + v[2] * cpt; // pitch about the view's right
+                v[1] = y1;
+                v[2] = z1;
+                const float x2 = v[0] * cyw - v[1] * syw, y2 = v[0] * syw + v[1] * cyw; // yaw about its up (left +)
+                v[0] = x2;
+                v[1] = y2;
+            }
+        }
         // the recoil: back and up, the muzzle raised
         const float kick = g_recoil * p.recoil;
         pos[1] -= kRecoilBack * kick;
