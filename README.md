@@ -157,9 +157,15 @@ WMR ...), then F2 > Graphics > VR: `vr.enabled` (off; `VCS_VR=0/1`), `vr.view` (
 (4 m), `vr.cinema_size` (5 m wide), `vr.hud_distance` (1.5 m); recentre with F7 (`controls.vr_recenter_key`) or
 Back + L3. Without a runtime or headset it logs one line (`[VR] ...: VR stays off`) and does nothing. Turn the
 window's vertical sync off (it would pace the loop to the monitor too). Control command `vr` (status; `vr recenter`).
+F2 > Graphics > VR > "VR status" shows what VR is doing; `build\run\vr.log` (next to vcs.exe: `<exe folder>\run\vr.log`,
+new each run) has the loader, the active runtime, the headset, its views and refresh rate, the swapchain formats,
+every session state change, every OpenXR error with its call, and a summary every 30 s - the file to send back.
 Needs a `vcs.exe` with the present hook (`add_present_hook`). Tests without a headset: `-DVR_TEST_RUNTIME=ON` builds
 `xr_test_runtime.dll` (`plugins/VR/test`), selected per run with `VCS_VR_RUNTIME=<path>`; it simulates a head
-(`XRTEST_HEAD`, `XRTEST_YAW_SWEEP`) and writes what each eye sees (`XRTEST_CAPTURE=<dir>`). The loader is built from
+(`XRTEST_HEAD`, `XRTEST_YAW_SWEEP`) and writes what each eye sees (`XRTEST_CAPTURE=<dir>`); `XRTEST_HZ`,
+`XRTEST_FORMATS` (e.g. `bgra_srgb,bgra`), `XRTEST_TYPELESS=1`, `XRTEST_NO_HMD=<s>` vary the device, and a control file
+(`XRTEST_CONTROL=<file>`: sleep, wake, unfocus, focus, loss, exit, instance_loss, recenter, hz N) drives session state
+changes; every spec violation it sees is logged as `VALIDATION`. The loader is built from
 KhronosGroup/OpenXR-SDK release-1.1.65 (FetchContent; `-DFETCHCONTENT_SOURCE_DIR_OPENXR_SDK=<dir>` offline;
 `-DVR_BUILD_OPENXR_LOADER=OFF` to bring your own).
 

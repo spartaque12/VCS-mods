@@ -51,6 +51,18 @@ namespace
     // frames on the cinema screen by why (status): cinema chosen, no layers, no 3D, no head look in the game, no pose for
     // the shown frame, a menu open
     uint64_t g_cinemaWhy[6] = {};
+    const char *const kCinemaWhy[6] = {"VR view set to cinema", "no picture layers (loading screen / movie)", "no 3D shown (menu)",
+                                       "first person on foot not active (key B; vehicles and cutscenes use the cinema)",
+                                       "no head pose for the shown frame yet", "a menu is open"};
+    // the F2 readout (vr.status): what VR is doing now
+    enum Status
+    {
+        kOff = 0, kStarting, kNoRuntime, kNoHeadset, kWaiting, kHeadTracked, kCinema, kError, kNeedsD3D11, kEnded
+    };
+    std::atomic<int> g_status{kOff};
+    std::string g_lastShown;              // what the headset showed last frame (logged when it changes)
+    uint64_t g_headFrames = 0, g_cinemaFrames = 0;
+    int64_t g_summaryNs = 0;
 
     int64_t nowNs()
     {
@@ -77,7 +89,7 @@ namespace
         if ((!g_setHeadLook || !g_headApplied) && !reported)
         {
             reported = true;
-            mod::log("[VR] CameraAim.asi with the head look not found: the headset shows the cinema screen only\n");
+            vr::log("CameraAim.asi with the head look not found: the headset shows the cinema screen only\n");
         }
     }
 
@@ -243,7 +255,7 @@ namespace
         ok = ok && SUCCEEDED(d->CreateDepthStencilState(&dd, &g_gpu.depth));
         if (!ok)
         {
-            mod::log("[VR] could not create the copy shaders\n");
+            vr::log("could not create the copy shaders\n");
             gpuRelease();
         }
         return ok;
@@ -337,7 +349,7 @@ namespace
         if (vr::started() || vr::pending())
         {
             vr::stop();
-            mod::log("[VR] off (%s)\n", why);
+            vr::log("off (%s)\n", why);
         }
         g_mode = "off";
     }
@@ -347,6 +359,7 @@ namespace
         vr::ProjectionLayer proj;
         vr::QuadLayer quads[2];
         int nq = 0;
+        const char *cinemaWhy = "";
         if (vr::shouldRender())
         {
             vr::Pose renderPose;
@@ -354,12 +367,18 @@ namespace
             const bool reasons[6] = {g_view.load() == 0, f->scene != nullptr, f->has_3d != 0, headApplied,
                                      poseFor(f->input_ns, renderPose), !menuOpen()};
             bool head = g_lens.valid;
+            int why = g_lens.valid ? -1 : 2;
             for (int i = 0; i < 6; ++i)
             {
                 head = head && reasons[i];
                 if (!reasons[i])
+                {
                     ++g_cinemaWhy[i];
+                    if (why < 0)
+                        why = i;
+                }
             }
+            cinemaWhy = why < 0 ? "" : why == 2 && !g_lens.valid ? "no 3D camera seen yet" : kCinemaWhy[why];
             if (head)
             {
                 bool srgb = false;
@@ -412,24 +431,52 @@ namespace
                 g_mode = "cinema";
             }
         }
+        const bool rendered = vr::shouldRender();
         vr::endFrame(proj, quads, nq);
+        if (rendered)
+        {
+            const std::string shown = proj.on ? "head-tracked" : nq ? "cinema" : "nothing";
+            (proj.on ? g_headFrames : g_cinemaFrames)++;
+            g_status = proj.on ? kHeadTracked : kCinema;
+            if (shown != g_lastShown)
+            {
+                if (proj.on)
+                    vr::log("showing: head-tracked picture %ux%u (fov L%.0f R%.0f U%.0f D%.0f deg)%s\n", f->layer_width,
+                            f->layer_height, proj.fov.left * 57.3f, proj.fov.right * 57.3f, proj.fov.up * 57.3f,
+                            proj.fov.down * 57.3f, nq ? " + HUD panel" : "");
+                else
+                    vr::log("showing: %s%s%s\n", shown.c_str(), *cinemaWhy ? " - " : "", cinemaWhy);
+                g_lastShown = shown;
+            }
+        }
     }
 
     void present(void *, const VcsPresentFrame *f)
     {
         if (!g_enabled.load())
         {
-            if (vr::started() || vr::pending() || g_split || g_headSent)
+            if (vr::started() || vr::pending() || g_split || g_headSent || vr::exited())
                 stopVr("switched off");
+            vr::clearExited();
             g_failed = false;
+            g_retryNs = 0;
+            g_status = kOff;
             return;
         }
         if (g_failed)
             return;
         if (f->backend != VCS_RENDER_BACKEND_D3D11 || !f->device || !f->context)
         {
-            mod::log("[VR] VR needs the D3D11 renderer (Graphics > Renderer): VR stays off, the game runs as usual\n");
+            vr::log("VR needs the D3D11 renderer (Graphics > Renderer): VR stays off, the game runs as usual\n");
             g_failed = true;
+            g_status = kNeedsD3D11;
+            return;
+        }
+        if (vr::exited())
+        {
+            g_status = kEnded;
+            sendHeadLook(false);
+            setSplit(false);
             return;
         }
         auto *device = static_cast<ID3D11Device *>(f->device);
@@ -440,18 +487,28 @@ namespace
                 return;
             std::string why;
             const bool wasPending = vr::pending();
+            if (g_status == kOff)
+            {
+                g_status = kStarting;
+                vr::log("VR switched on: window %ux%u, picture layers %ux%u\n", f->window_width, f->window_height, f->layer_width,
+                        f->layer_height);
+            }
             if (!vr::start(device, why))
             {
                 if (vr::pending())
                 {
                     if (!wasPending)
-                        mod::log("[VR] %s\n", why.c_str());
+                        vr::log("%s\n", why.c_str());
                     g_retryNs = nowNs() + 3000000000ll;
+                    g_status = kNoHeadset;
                 }
                 else
                 {
-                    mod::log("[VR] %s: VR stays off, the game runs as usual\n", why.c_str());
+                    vr::log("%s: VR stays off, the game runs as usual\n", why.c_str());
                     g_failed = true;
+                    g_status = why.find("no OpenXR runtime") != std::string::npos || why.find("openxr_loader") != std::string::npos
+                                   ? kNoRuntime
+                                   : kError;
                 }
                 return;
             }
@@ -459,16 +516,19 @@ namespace
             {
                 stopVr("no shaders");
                 g_failed = true;
+                g_status = kError;
                 return;
             }
-            mod::log("[VR] OpenXR session on the game's D3D11 device (%s)\n", vr::runtimeName().c_str());
+            vr::log("OpenXR session on the game's D3D11 device (%s)\n", vr::runtimeName().c_str());
         }
         vr::poll();
         if (!vr::running())
         {
             sendHeadLook(false);
             setSplit(false);
+            g_lastShown.clear();
             g_mode = vr::started() ? "waiting for the headset" : "off";
+            g_status = vr::exited() ? kEnded : vr::started() ? kWaiting : kNoHeadset;
             if (!vr::started())
                 g_retryNs = nowNs() + 3000000000ll; // the session ended: start again later
             return;
@@ -496,8 +556,19 @@ namespace
             else
                 sendHeadLook(false);
         }
+        // every 30 s: what went to the headset
+        const int64_t now = nowNs();
+        if (!g_summaryNs)
+            g_summaryNs = now;
+        else if (now - g_summaryNs > 30000000000ll)
+        {
+            g_summaryNs = now;
+            vr::log("last 30 s: %llu frames head-tracked, %llu cinema (session %s, %.0f Hz); %s\n",
+                    static_cast<unsigned long long>(g_headFrames), static_cast<unsigned long long>(g_cinemaFrames),
+                    vr::sessionStateName(), vr::refreshHz(), vr::status().c_str());
+            g_headFrames = g_cinemaFrames = 0;
+        }
     }
-
     void enable(bool on)
     {
         g_enabled = on;
@@ -558,15 +629,15 @@ extern "C"
             }
             char b[512];
             std::snprintf(b, sizeof(b),
-                          "ok enabled=%d failed=%d mode=%s split=%d head=%d lens=%d cinema_by=view:%llu,layers:%llu,no3d:%llu,"
+                          "ok status=%d enabled=%d failed=%d mode=%s split=%d head=%d lens=%d cinema_by=view:%llu,layers:%llu,no3d:%llu,"
                           "nohead:%llu,nopose:%llu,menu:%llu %s",
-                          g_enabled.load() ? 1 : 0, g_failed ? 1 : 0, g_mode.c_str(), g_split ? 1 : 0, g_headSent ? 1 : 0,
+                          g_status.load(), g_enabled.load() ? 1 : 0, g_failed ? 1 : 0, g_mode.c_str(), g_split ? 1 : 0, g_headSent ? 1 : 0,
                           g_lens.valid ? 1 : 0, (unsigned long long)g_cinemaWhy[0], (unsigned long long)g_cinemaWhy[1],
                           (unsigned long long)g_cinemaWhy[2], (unsigned long long)g_cinemaWhy[3], (unsigned long long)g_cinemaWhy[4],
                           (unsigned long long)g_cinemaWhy[5], vr::status().c_str());
             reply(b);
         });
-        mod::log("[VR] VR.asi loaded (Graphics > VR; off by default)\n");
+        vr::log("VR.asi loaded (built %s %s; Graphics > VR, off by default)\n", __DATE__, __TIME__);
         return 1;
     }
 
@@ -587,6 +658,28 @@ extern "C"
         on.onChange = [](int v) { enable(v != 0); };
         on.read = [] { return g_enabled.load() ? 1 : 0; };
         mod::add(on);
+
+        // a readout, not a choice: read() gives what VR is doing now (changing it does nothing)
+        mod::Spec status;
+        status.key = "vr.status";
+        status.page = "Graphics";
+        status.section = "VR";
+        status.label = "VR status";
+        status.help = "What VR is doing now (a readout). Details: build\\run\\vr.log - send that file when VR does not work.";
+        status.type = mod::Type::Choice;
+        status.choices = {cm("Off", kOff),
+                          cm("Starting...", kStarting),
+                          cm("No OpenXR runtime (start SteamVR / Quest Link / Virtual Desktop)", kNoRuntime),
+                          cm("No headset found - retrying", kNoHeadset),
+                          cm("Waiting for the headset (asleep / not worn?)", kWaiting),
+                          cm("Running: head-tracked", kHeadTracked),
+                          cm("Running: cinema screen", kCinema),
+                          cm("Error - see build\\run\\vr.log", kError),
+                          cm("Needs the D3D11 renderer", kNeedsD3D11),
+                          cm("Ended by the runtime - switch VR off and on", kEnded)};
+        status.onChange = [](int) {};
+        status.read = [] { return g_status.load(); };
+        mod::add(status);
 
         mod::Spec view;
         view.key = "vr.view";

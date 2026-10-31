@@ -13,6 +13,15 @@ struct ID3D11Texture2D;
 
 namespace vr
 {
+    // A line for the game's log ("[VR] " in front) and for <vcs.exe's folder>\run\vr.log (time-stamped, started afresh
+    // each run): what a player sends back when VR does not work.
+    void log(const char *format, ...)
+#if defined(__clang__)
+        __attribute__((format(printf, 1, 2)))
+#endif
+        ;
+    std::string logPath();
+
     struct Pose
     {
         float q[4] = {0.0f, 0.0f, 0.0f, 1.0f}; // x, y, z, w
@@ -54,6 +63,10 @@ namespace vr
     void stop();
     bool started();
     bool pending(); // the instance is there, the headset not (yet): start again later
+    bool exited();  // the runtime ended the session (XR_SESSION_STATE_EXITING): not restarted until VR is switched on again
+    void clearExited();
+    const char *sessionStateName();
+    float refreshHz(); // from the predicted display period (0 before the first frame)
     std::string runtimeName();
 
     // Events (session state); call once per frame before frame().

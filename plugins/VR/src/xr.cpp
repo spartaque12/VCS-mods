@@ -16,6 +16,7 @@
 #include <openxr/openxr_loader_negotiation.h>
 
 #include <algorithm>
+#include <cstdarg>
 #include <cstdlib>
 #include <cmath>
 #include <cstdio>
@@ -23,6 +24,45 @@
 
 namespace vr
 {
+    namespace
+    {
+        FILE *g_logFile = nullptr;
+        std::string g_logPath;
+        bool g_logTried = false;
+    }
+
+    std::string logPath() { return g_logPath; }
+
+    void log(const char *format, ...)
+    {
+        char text[1024];
+        va_list args;
+        va_start(args, format);
+        std::vsnprintf(text, sizeof(text), format, args);
+        va_end(args);
+        mod::log("[VR] %s", text);
+        if (!g_logTried)
+        {
+            g_logTried = true;
+            const char *dir = mod::api && mod::api->game_dir ? mod::api->game_dir() : nullptr;
+            std::string base = dir && *dir ? std::string(dir) : std::string(".");
+            if (base.back() != '\\' && base.back() != '/')
+                base += '\\';
+            CreateDirectoryA((base + "run").c_str(), nullptr);
+            g_logPath = base + "run\\vr.log";
+            g_logFile = std::fopen(g_logPath.c_str(), "w");
+        }
+        if (g_logFile)
+        {
+            SYSTEMTIME t;
+            GetLocalTime(&t);
+            std::fprintf(g_logFile, "%02d:%02d:%02d.%03d %s", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds, text);
+            if (!*text || text[std::strlen(text) - 1] != '\n')
+                std::fputc('\n', g_logFile);
+            std::fflush(g_logFile);
+        }
+    }
+
     namespace
     {
         // ---- the loader's entry points ------------------------------------------------------------------------------
@@ -79,6 +119,43 @@ namespace vr
         int64_t g_formats[4] = {}; // preference order, filled from the runtime's list
         int g_formatCount = 0;
         std::string g_lastError;
+        bool g_exited = false;           // XR_SESSION_STATE_EXITING: the runtime / user ended VR
+        bool g_retryable = false;        // the last start failed for a reason that passes (the runtime restarting)
+        int64_t g_period = 0;            // the predicted display period last logged
+        uint64_t g_errors = 0;
+
+        const char *stateName(XrSessionState s)
+        {
+            switch (s)
+            {
+            case XR_SESSION_STATE_IDLE: return "IDLE";
+            case XR_SESSION_STATE_READY: return "READY";
+            case XR_SESSION_STATE_SYNCHRONIZED: return "SYNCHRONIZED";
+            case XR_SESSION_STATE_VISIBLE: return "VISIBLE";
+            case XR_SESSION_STATE_FOCUSED: return "FOCUSED";
+            case XR_SESSION_STATE_STOPPING: return "STOPPING";
+            case XR_SESSION_STATE_LOSS_PENDING: return "LOSS_PENDING";
+            case XR_SESSION_STATE_EXITING: return "EXITING";
+            default: return "UNKNOWN";
+            }
+        }
+
+        const char *formatName(int64_t f)
+        {
+            switch (f)
+            {
+            case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return "R8G8B8A8_UNORM_SRGB";
+            case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return "B8G8R8A8_UNORM_SRGB";
+            case DXGI_FORMAT_R8G8B8A8_UNORM: return "R8G8B8A8_UNORM";
+            case DXGI_FORMAT_B8G8R8A8_UNORM: return "B8G8R8A8_UNORM";
+            case DXGI_FORMAT_R10G10B10A2_UNORM: return "R10G10B10A2_UNORM";
+            case DXGI_FORMAT_R16G16B16A16_FLOAT: return "R16G16B16A16_FLOAT";
+            case DXGI_FORMAT_D32_FLOAT: return "D32_FLOAT";
+            case DXGI_FORMAT_D24_UNORM_S8_UINT: return "D24_UNORM_S8_UINT";
+            case DXGI_FORMAT_D16_UNORM: return "D16_UNORM";
+            default: return nullptr;
+            }
+        }
 
         struct Swapchain
         {
@@ -105,7 +182,8 @@ namespace vr
             if (XR_SUCCEEDED(r))
                 return true;
             g_lastError = std::string(what) + ": " + resultText(r);
-            mod::log("[VR] %s\n", g_lastError.c_str());
+            if (++g_errors <= 200) // a runtime failing every frame would fill the log
+                vr::log("error: %s\n", g_lastError.c_str());
             return false;
         }
 
@@ -144,7 +222,7 @@ namespace vr
                     return false;
                 }
                 pGetInstanceProcAddr = rq.getInstanceProcAddr;
-                mod::log("[VR] runtime %s loaded directly (VCS_VR_RUNTIME)\n", rt);
+                vr::log("runtime %s loaded directly (VCS_VR_RUNTIME)\n", rt);
             }
             if (pGetInstanceProcAddr)
             {
@@ -176,6 +254,22 @@ namespace vr
                 why = "openxr_loader.dll: no xrCreateInstance";
                 return false;
             }
+            wchar_t path[MAX_PATH] = {};
+            GetModuleFileNameW(g_loader, path, MAX_PATH);
+            char narrow[MAX_PATH * 2] = {};
+            WideCharToMultiByte(CP_UTF8, 0, path, -1, narrow, sizeof(narrow), nullptr, nullptr);
+            vr::log("OpenXR loader: %s\n", narrow);
+            // the active runtime as the loader will find it (read-only; per machine, or per user on some setups)
+            for (HKEY root : {HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER})
+            {
+                char value[1024] = {};
+                DWORD size = sizeof(value);
+                if (RegGetValueA(root, "SOFTWARE\\Khronos\\OpenXR\\1", "ActiveRuntime", RRF_RT_REG_SZ, nullptr, value, &size) ==
+                    ERROR_SUCCESS)
+                    vr::log("active OpenXR runtime (%s): %s\n", root == HKEY_LOCAL_MACHINE ? "HKLM" : "HKCU", value);
+            }
+            if (const char *e = std::getenv("XR_RUNTIME_JSON"); e && *e)
+                vr::log("XR_RUNTIME_JSON=%s (the loader ignores it when the game runs as administrator)\n", e);
             return true;
         }
 
@@ -193,8 +287,13 @@ namespace vr
             std::vector<XrExtensionProperties> ext(count, {XR_TYPE_EXTENSION_PROPERTIES});
             p_xrEnumerateInstanceExtensionProperties(nullptr, count, &count, ext.data());
             bool d3d11 = false;
+            std::string names;
             for (const XrExtensionProperties &e : ext)
+            {
                 d3d11 = d3d11 || std::strcmp(e.extensionName, XR_KHR_D3D11_ENABLE_EXTENSION_NAME) == 0;
+                names += std::string(names.empty() ? "" : " ") + e.extensionName;
+            }
+            vr::log("runtime extensions (%u): %s\n", count, names.c_str());
             if (!d3d11)
             {
                 why = "the OpenXR runtime has no D3D11 support (XR_KHR_D3D11_enable)";
@@ -234,6 +333,7 @@ namespace vr
                               XR_VERSION_PATCH(props.runtimeVersion));
                 g_runtime = std::string(props.runtimeName) + v;
             }
+            vr::log("OpenXR instance: runtime %s\n", g_runtime.c_str());
             return true;
         }
 
@@ -254,6 +354,12 @@ namespace vr
                 why = "no headset connected (the OpenXR runtime " + g_runtime + " is there): retrying";
                 return SystemResult::Later;
             }
+            if (r == XR_ERROR_INSTANCE_LOST)
+            {
+                why = "the OpenXR runtime restarted: reconnecting";
+                vr::stop(); // a new instance on the next try
+                return SystemResult::Later;
+            }
             if (XR_FAILED(r))
             {
                 why = std::string("xrGetSystem: ") + resultText(r);
@@ -261,14 +367,22 @@ namespace vr
             }
             XrSystemProperties sp = {XR_TYPE_SYSTEM_PROPERTIES};
             if (XR_SUCCEEDED(p_xrGetSystemProperties(g_instance, g_system, &sp)))
-                mod::log("[VR] headset: %s (runtime %s)\n", sp.systemName, g_runtime.c_str());
+                vr::log("headset: \"%s\" (vendor 0x%x; max swapchain %ux%u, max layers %u; orientation tracking %d, position "
+                        "tracking %d)\n",
+                        sp.systemName, sp.vendorId, sp.graphicsProperties.maxSwapchainImageWidth,
+                        sp.graphicsProperties.maxSwapchainImageHeight, sp.graphicsProperties.maxLayerCount,
+                        sp.trackingProperties.orientationTracking ? 1 : 0, sp.trackingProperties.positionTracking ? 1 : 0);
             uint32_t n = 0;
             p_xrEnumerateViewConfigurationViews(g_instance, g_system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &n, nullptr);
             std::vector<XrViewConfigurationView> views(n, {XR_TYPE_VIEW_CONFIGURATION_VIEW});
             if (n && XR_SUCCEEDED(p_xrEnumerateViewConfigurationViews(g_instance, g_system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, n,
                                                                           &n, views.data())))
-                mod::log("[VR] %u views, %ux%u per eye recommended\n", n, views[0].recommendedImageRectWidth,
-                         views[0].recommendedImageRectHeight);
+                for (uint32_t i = 0; i < n; ++i)
+                    vr::log("view %u (primary stereo): recommended %ux%u, max %ux%u, %u samples\n", i,
+                            views[i].recommendedImageRectWidth, views[i].recommendedImageRectHeight, views[i].maxImageRectWidth,
+                            views[i].maxImageRectHeight, views[i].recommendedSwapchainSampleCount);
+            else
+                vr::log("no primary stereo view configuration (%u views)\n", n);
             g_viewCount = std::max(1u, n);
             uint32_t bn = 0;
             p_xrEnumerateEnvironmentBlendModes(g_instance, g_system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, 0, &bn, nullptr);
@@ -276,6 +390,7 @@ namespace vr
             if (bn && XR_SUCCEEDED(p_xrEnumerateEnvironmentBlendModes(g_instance, g_system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, bn,
                                                                           &bn, blends.data())))
                 g_blend = blends[0];
+            vr::log("environment blend mode %d (of %u)\n", static_cast<int>(g_blend), bn);
             return SystemResult::Ok;
         }
 
@@ -307,9 +422,13 @@ namespace vr
                 return false;
             }
             const LUID mine = adapterLuid(g_device);
+            vr::log("D3D11: the game's GPU LUID %08lx:%08lx, the runtime's %08lx:%08lx, feature level 0x%x (runtime minimum 0x%x)\n",
+                    static_cast<unsigned long>(mine.HighPart), mine.LowPart, static_cast<unsigned long>(req.adapterLuid.HighPart),
+                    req.adapterLuid.LowPart, static_cast<unsigned>(g_device->GetFeatureLevel()),
+                    static_cast<unsigned>(req.minFeatureLevel));
             if (mine.LowPart != req.adapterLuid.LowPart || mine.HighPart != req.adapterLuid.HighPart)
-                mod::log("[VR] the headset wants another GPU than the game's: the session may fail (connect the headset to the "
-                         "GPU the game runs on)\n");
+                vr::log("warning: the headset wants another GPU than the game's: the session may fail (laptops: run the game "
+                        "on the GPU the headset is connected to)\n");
             if (g_device->GetFeatureLevel() < req.minFeatureLevel)
             {
                 why = "the game's D3D11 device is below the runtime's minimum feature level";
@@ -325,6 +444,7 @@ namespace vr
             {
                 why = std::string("xrCreateSession: ") + resultText(r);
                 g_session = XR_NULL_HANDLE;
+                g_retryable = r == XR_ERROR_INSTANCE_LOST || r == XR_ERROR_SYSTEM_INVALID;
                 return false;
             }
             XrReferenceSpaceCreateInfo rs = {XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
@@ -345,6 +465,13 @@ namespace vr
                 p_xrEnumerateSwapchainFormats(g_session, n, &n, formats.data());
             const int64_t wanted[] = {DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_R8G8B8A8_UNORM,
                                       DXGI_FORMAT_B8G8R8A8_UNORM};
+            std::string offered;
+            for (int64_t f : formats)
+            {
+                const char *name = formatName(f);
+                offered += (offered.empty() ? "" : ", ") + (name ? std::string(name) : std::to_string(f));
+            }
+            vr::log("swapchain formats offered: %s\n", offered.c_str());
             g_formatCount = 0;
             for (int64_t w : wanted)
                 if (std::find(formats.begin(), formats.end(), w) != formats.end())
@@ -354,7 +481,10 @@ namespace vr
                 why = "the OpenXR runtime offers no 8-bit RGBA swapchain format";
                 return false;
             }
-            mod::log("[VR] session created (swapchain format %lld)\n", static_cast<long long>(g_formats[0]));
+            vr::log("session created; swapchain format %s%s\n", formatName(g_formats[0]),
+                    g_formats[0] == DXGI_FORMAT_R8G8B8A8_UNORM || g_formats[0] == DXGI_FORMAT_B8G8R8A8_UNORM
+                        ? " (no sRGB format: the picture may look too bright)"
+                        : "");
             return true;
         }
 
@@ -385,12 +515,26 @@ namespace vr
             g_state = XR_SESSION_STATE_UNKNOWN;
         }
 
-        void mul(const float a[4], const float b[4], float out[4]) // quaternion product a * b
+        // a frame call's error that means the session is gone or not running (the events say so too, maybe later)
+        void lostOrStopped(XrResult r)
         {
-            out[0] = a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1];
-            out[1] = a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0];
-            out[2] = a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3];
-            out[3] = a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2];
+            if (r == XR_ERROR_INSTANCE_LOST)
+            {
+                vr::log("the OpenXR instance is lost (the runtime quit?): retrying later\n");
+                g_running = false; // nothing more to end
+                vr::stop();
+            }
+            else if (r == XR_ERROR_SESSION_LOST)
+            {
+                vr::log("the session is lost: retrying\n");
+                destroySession();
+                g_system = XR_NULL_SYSTEM_ID;
+            }
+            else if (r == XR_ERROR_SESSION_NOT_RUNNING)
+            {
+                g_running = false;
+                g_frameBegun = false;
+            }
         }
     }
 
@@ -417,9 +561,15 @@ namespace vr
             }
         }
         g_pending = false;
+        g_retryable = false;
         if (!createSession(why))
         {
             destroySession();
+            if (g_retryable) // the runtime restarted under us: a new instance on the next try
+            {
+                stop();
+                g_pending = true;
+            }
             return false;
         }
         g_wantRecenter = true;
@@ -430,12 +580,11 @@ namespace vr
     {
         if (g_instance)
         {
-            if (g_running && g_session)
-            {
-                if (g_frameBegun)
-                    endFrame({}, nullptr, 0);
+            // a session in STOPPING is ended; otherwise destroyed as it is (a frame in flight is dropped; switching VR
+            // off, a lost instance)
+            if (g_session && g_running && g_state == XR_SESSION_STATE_STOPPING)
                 p_xrEndSession(g_session);
-            }
+            g_frameBegun = false;
             destroySession();
             p_xrDestroyInstance(g_instance);
         }
@@ -455,32 +604,50 @@ namespace vr
         if (!g_instance)
             return;
         XrEventDataBuffer e = {XR_TYPE_EVENT_DATA_BUFFER};
-        while (p_xrPollEvent(g_instance, &e) == XR_SUCCESS)
+        for (;;)
         {
+            const XrResult r = p_xrPollEvent(g_instance, &e);
+            if (r == XR_EVENT_UNAVAILABLE)
+                break;
+            if (r != XR_SUCCESS)
+            {
+                check(r, "xrPollEvent");
+                break;
+            }
             if (e.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
             {
                 const auto &ev = reinterpret_cast<const XrEventDataSessionStateChanged &>(e);
+                vr::log("session state %s -> %s\n", stateName(g_state), stateName(ev.state));
                 g_state = ev.state;
-                mod::log("[VR] session state %d\n", static_cast<int>(ev.state));
                 if (ev.state == XR_SESSION_STATE_READY && g_session)
                 {
                     XrSessionBeginInfo bi = {XR_TYPE_SESSION_BEGIN_INFO};
                     bi.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
                     g_running = check(p_xrBeginSession(g_session, &bi), "xrBeginSession");
+                    g_frameBegun = false;
                     if (g_running)
-                        mod::log("[VR] running: frames go to the headset\n");
+                        vr::log("running: frames go to the headset\n");
                 }
                 else if (ev.state == XR_SESSION_STATE_STOPPING && g_session)
                 {
-                    p_xrEndSession(g_session);
+                    // the headset asleep / taken off, the runtime's dashboard, another VR app: frames stop until READY
+                    check(p_xrEndSession(g_session), "xrEndSession");
                     g_running = false;
                     g_frameBegun = false;
-                    mod::log("[VR] stopped by the runtime\n");
+                    vr::log("stopped by the runtime (headset asleep or taken off?): the game shows on the monitor only "
+                            "until the headset is back\n");
                 }
-                else if (ev.state == XR_SESSION_STATE_EXITING || ev.state == XR_SESSION_STATE_LOSS_PENDING)
+                else if (ev.state == XR_SESSION_STATE_EXITING)
                 {
-                    mod::log("[VR] the session ended (%s): the headset is released\n",
-                             ev.state == XR_SESSION_STATE_EXITING ? "exiting" : "lost");
+                    vr::log("the runtime ended VR for this game (exiting): switch Graphics > VR off and on to reconnect\n");
+                    destroySession();
+                    g_system = XR_NULL_SYSTEM_ID;
+                    g_exited = true;
+                    break;
+                }
+                else if (ev.state == XR_SESSION_STATE_LOSS_PENDING)
+                {
+                    vr::log("the session was lost (the headset disconnected or the runtime restarted): retrying\n");
                     destroySession();
                     g_system = XR_NULL_SYSTEM_ID; // find the headset again on the next start
                     break;
@@ -488,15 +655,25 @@ namespace vr
             }
             else if (e.type == XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING)
             {
-                mod::log("[VR] the OpenXR runtime is going away\n");
+                vr::log("the OpenXR runtime is going away (instance loss pending): retrying later\n");
                 stop();
                 return;
             }
             else if (e.type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING)
+            {
+                vr::log("the runtime moved the reference space (its own recentre): recentring\n");
                 g_wantRecenter = true;
+            }
+            else if (e.type == XR_TYPE_EVENT_DATA_EVENTS_LOST)
+                vr::log("warning: %u OpenXR events lost\n", reinterpret_cast<const XrEventDataEventsLost &>(e).lostEventCount);
             e = {XR_TYPE_EVENT_DATA_BUFFER};
         }
     }
+
+    bool exited() { return g_exited; }
+    void clearExited() { g_exited = false; }
+    const char *sessionStateName() { return g_session ? stateName(g_state) : "none"; }
+    float refreshHz() { return g_period > 0 ? static_cast<float>(1e9 / static_cast<double>(g_period)) : 0.0f; }
 
     bool running() { return g_running && g_session; }
     bool focused() { return g_state == XR_SESSION_STATE_FOCUSED; }
@@ -507,13 +684,26 @@ namespace vr
             return g_frameBegun;
         XrFrameWaitInfo wi = {XR_TYPE_FRAME_WAIT_INFO};
         g_frame = {XR_TYPE_FRAME_STATE};
-        if (!check(p_xrWaitFrame(g_session, &wi, &g_frame), "xrWaitFrame"))
+        const XrResult wr = p_xrWaitFrame(g_session, &wi, &g_frame);
+        if (!check(wr, "xrWaitFrame"))
+        {
+            lostOrStopped(wr);
             return false;
+        }
+        if (g_frame.predictedDisplayPeriod > 0 &&
+            (g_period == 0 || std::llabs(g_frame.predictedDisplayPeriod - g_period) > g_period / 50))
+        {
+            g_period = g_frame.predictedDisplayPeriod;
+            vr::log("headset refresh: %.1f Hz (display period %.2f ms)\n", 1e9 / static_cast<double>(g_period), g_period / 1e6);
+        }
         XrFrameBeginInfo bi = {XR_TYPE_FRAME_BEGIN_INFO};
         const XrResult r = p_xrBeginFrame(g_session, &bi);
         g_frameBegun = r == XR_SUCCESS || r == XR_FRAME_DISCARDED;
         if (!g_frameBegun)
+        {
             check(r, "xrBeginFrame");
+            lostOrStopped(r);
+        }
         if (g_frameBegun && g_wantRecenter)
         {
             g_wantRecenter = false;
@@ -570,7 +760,7 @@ namespace vr
             if (g_space)
                 p_xrDestroySpace(g_space);
             g_space = space;
-            mod::log("[VR] recentred (yaw %.0f deg)\n", yaw * 57.29578f);
+            vr::log("recentred (yaw %.0f deg)\n", yaw * 57.29578f);
         }
     }
 
@@ -613,7 +803,7 @@ namespace vr
                 destroySwapchain(s);
                 return nullptr;
             }
-            mod::log("[VR] swapchain %d: %ux%u, %u images\n", static_cast<int>(panel), width, height, n);
+            vr::log("swapchain %d: %ux%u, %u images\n", static_cast<int>(panel), width, height, n);
         }
         XrSwapchainImageAcquireInfo ai = {XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
         if (!check(p_xrAcquireSwapchainImage(s.handle, &ai, &s.index), "xrAcquireSwapchainImage"))
@@ -694,8 +884,11 @@ namespace vr
         ei.layerCount = static_cast<uint32_t>(layers.size());
         ei.layers = layers.data();
         g_frameBegun = false;
-        if (check(p_xrEndFrame(g_session, &ei), "xrEndFrame"))
+        const XrResult r = p_xrEndFrame(g_session, &ei);
+        if (check(r, "xrEndFrame"))
             ++g_submitted;
+        else
+            lostOrStopped(r);
     }
 
     uint64_t framesSubmitted() { return g_submitted; }
@@ -703,9 +896,9 @@ namespace vr
     std::string status()
     {
         char b[256];
-        std::snprintf(b, sizeof(b), "runtime=\"%s\" instance=%d session=%d state=%d running=%d frames=%llu", g_runtime.c_str(),
-                      g_instance ? 1 : 0, g_session ? 1 : 0, static_cast<int>(g_state), running() ? 1 : 0,
-                      static_cast<unsigned long long>(g_submitted));
+        std::snprintf(b, sizeof(b), "runtime=\"%s\" instance=%d session=%d state=%s running=%d hz=%.0f frames=%llu errors=%llu",
+                      g_runtime.c_str(), g_instance ? 1 : 0, g_session ? 1 : 0, sessionStateName(), running() ? 1 : 0,
+                      refreshHz(), static_cast<unsigned long long>(g_submitted), static_cast<unsigned long long>(g_errors));
         return b;
     }
 }
