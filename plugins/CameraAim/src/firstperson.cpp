@@ -35,6 +35,7 @@ namespace vcs::firstperson
         constexpr uint32_t kCamMode = 0x0u, kCamFront = 0x10u, kCamSource = 0x20u, kCamUp = 0x60u, kCamBeta = 0x7Cu,
                            kCamFov = 0x134u, kCamTarget = 0x1A0u, kCamStandA = 0x220u, kCamStandB = 0x230u;
         constexpr uint32_t kModeFollowPed = 4, kModeLockOn = 11;
+        constexpr uint32_t kModeSniper = 7, kModeRocket = 8, kModeCamera = 46, kModeBinoculars = 47; // the game's own aims
         // in vehicles: 18 behind cars, bikes, helis and planes, 22 boats, 16 the game's own in-car view (Select)
         constexpr uint32_t kModeCar = 18, kModeBoat = 22, kModeInCar = 16;
         constexpr uint32_t kCamLookDirection = 0x74u; // after the game's update: 0 behind, 1 left, 2 right, 3 ahead (L2 / R2)
@@ -482,6 +483,57 @@ namespace vcs::firstperson
             return true;
         }
 
+        // The game's own first-person aims on foot - the sniper rifles' scope (mode 7), the rocket launcher (8), the camera
+        // (46) and binoculars (47): the game's own camera aims them from the stick only (the mouse came through as a
+        // right stick it does not read for them), so their front is ours here - the mouse / right stick, slowed with the
+        // scope's zoom (its field of view against 70). The game keeps the camera's place and zoom; its shot goes along
+        // the camera's front (game-internals.md 12t). Leaving it, first person goes on facing the same way.
+        bool g_scope = false;
+        bool updateScope(uint8_t *ram, uint32_t cam, uint32_t ped)
+        {
+            float dYaw, dPitch;
+            {
+                std::lock_guard<std::mutex> lock(g_lookMutex);
+                dYaw = g_lookYaw;
+                dPitch = g_lookPitch;
+                g_lookYaw = g_lookPitch = 0.0f;
+            }
+            const float gf[3] = {rdf(ram, cam + kCamFront), rdf(ram, cam + kCamFront + 4), rdf(ram, cam + kCamFront + 8)};
+            if (!g_scope)
+            {
+                g_scope = true;
+                if (!g_on) // from the game's camera; out of first person its view
+                {
+                    g_yaw = std::atan2(gf[1], gf[0]);
+                    g_pitch = std::clamp(std::asin(std::clamp(gf[2], -1.0f, 1.0f)), kPitchDown, kPitchUp);
+                }
+                dYaw = dPitch = 0.0f;
+                viewmodel::off(ram);
+                mod::log("[firstperson] scope\n");
+            }
+            const float fov = rdf(ram, cam + kCamFov);
+            const float zoom = std::clamp((fov >= 1.0f && fov <= 130.0f ? fov : 70.0f) / 70.0f, 0.03f, 1.5f);
+            g_yaw = wrap(g_yaw + dYaw * zoom);
+            g_pitch = std::clamp(g_pitch + dPitch * zoom, kPitchDown, kPitchUp);
+            g_on = true;
+            g_looking = true;
+            g_hideHead = false;
+            restoreNear(ram);
+            const float cy = std::cos(g_yaw), sy = std::sin(g_yaw), cp = std::cos(g_pitch), sp = std::sin(g_pitch);
+            const float dir[3] = {cp * cy, cp * sy, sp}, up[3] = {-cy * sp, -sy * sp, cp};
+            const float src[3] = {rdf(ram, cam + kCamSource), rdf(ram, cam + kCamSource + 4), rdf(ram, cam + kCamSource + 8)};
+            wrVec(ram, cam + kCamFront, dir[0], dir[1], dir[2]);
+            wrVec(ram, cam + kCamUp, up[0], up[1], up[2]);
+            wrVec(ram, cam + kCamTarget, src[0] + dir[0], src[1] + dir[1], src[2] + dir[2]);
+            // the body with the aim
+            const float heading = wrap(g_yaw - kPi / 2.0f);
+            wrf(ram, ped + kPedRotationCur, heading);
+            wrf(ram, ped + kPedRotationDest, heading);
+            freeaim::frame(ram, ped, false, freeaim::View::Game, nullptr, nullptr, 0.0f, 0.0f);
+            publish();
+            return true;
+        }
+
         // One update of the active camera: in a vehicle (first person), on foot - first person's view, free aim's
         // camera over the shoulder (eased in from the game's and back out) - or the game's. False: the game's camera
         // (its height routines run).
@@ -514,6 +566,14 @@ namespace vcs::firstperson
             else if (g_driveOn)
                 endDriveBy(ram); // out of the vehicle, under a script camera, another mode: the game's camera
             const bool onFoot = ped && rd32(ram, ped + kPedVehicle) == 0 && rd32(ram, kLooksAtPlayer) == 1;
+            if (onFoot && (mode == kModeSniper || mode == kModeRocket || mode == kModeCamera || mode == kModeBinoculars))
+                return updateScope(ram, cam, ped); // the scopes: aimed by the mouse
+            if (g_scope)
+            {
+                g_scope = false;
+                if (!g_enabled)
+                    leave(ram); // third person: the game's camera again
+            }
             // first person on foot - and while getting in or out of a vehicle: the ped has it (+0x480) from the start of
             // the enter anim to the end of the exit anim, the game's follow camera (mode 4) still on (game-internals.md 12t)
             const bool first = g_enabled && ped && rd32(ram, kLooksAtPlayer) == 1 && (mode == kModeFollowPed || mode == kModeLockOn);
