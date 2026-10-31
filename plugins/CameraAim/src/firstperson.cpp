@@ -55,7 +55,7 @@ namespace vcs::firstperson
         constexpr uint32_t kAfterBones = 0x0020C310u;              // a ped getter the ped's render calls next
         constexpr uint32_t kAfterBonesInPedRender = 0x00200740u;   // its return address there (a0 = the ped)
         constexpr uint32_t kTreeNodes = 0x4u, kTreeMatrices = 0x28u; // RslTAnimTree: node count, world matrices (0x40 each)
-        constexpr uint32_t kPedBones = 25, kHeadBone = 5, kHeadEndBone = 6;
+        constexpr uint32_t kPedBones = 25, kNeckBone = 4, kHeadBone = 5, kHeadEndBone = 6;
 
         // DualShock 2 buttons (vcs.exe's src/game/vcs_input.cpp)
         constexpr uint16_t kR1 = 0x0800, kCircle = 0x2000;
@@ -112,6 +112,14 @@ namespace vcs::firstperson
         bool g_hideHead = false;  // the player's next draw collapses the head
         bool g_eyeValid = false;  // the eyes' offset from the ped's position, from its last draw
         float g_eye[3] = {};
+        const bool g_noFollow = std::getenv("VCS_FP_NOFOLLOW") != nullptr; // test switch
+        uint32_t g_dbgTreeFrame = 0, g_dbgAfterFrame = 0, g_dbgDoneFrame = 0, g_dbgOurs = 0; // status
+        float g_fpView[3][3] = {}; // first person's source, front, up this update (setFov makes it the frame's camera)
+        uint32_t g_fpViewFrame = 0;
+        float g_camHead[3] = {}; // in / getting in or out of a vehicle: the head joint the camera assumed this update
+        uint32_t g_camHeadFrame = 0;
+        constexpr float kBodyFollowMax = 0.8f;
+        constexpr float kCabinHalfWidth = 0.42f, kCabinSoft = 0.35f; // m from a car's middle; past it the head moves 35% // m: the drawn body moved to the camera at most
         float g_lastEye[3] = {}; // the eyes of the last update (jumps held out)
         bool g_lastEyeValid = false;
         uint32_t g_lastEyeFrame = 0, g_eyeHeld = 0;
@@ -198,6 +206,32 @@ namespace vcs::firstperson
         {
             const uint32_t type = rd32(ram, veh + kVehicleType);
             return veh + (type == 6 || type == 8 ? kVehicleLeanMatrix : 0u);
+        }
+
+        // A car's driver's head sideways in its space, softly kept in the cabin: leaning out to open or close the door
+        // put the eyes in the door and its pillar (the drawn body follows the camera, afterBones)
+        float cabinX(float x)
+        {
+            const float a = std::fabs(x);
+            return a <= kCabinHalfWidth ? x : std::copysign(kCabinHalfWidth + (a - kCabinHalfWidth) * kCabinSoft, x);
+        }
+
+        // First person's view written into the other two CCams as well: when the mode changes (getting in: 4 -> 18,
+        // out: 18 -> 4) CCamera::Process blends from the previous CCam to the new one for a few frames, and the previous
+        // one held the game's own camera - the blend went through the car's door and roof (dark frames). Blending
+        // between equal views changes nothing; the game sets a CCam up afresh when it takes it for a new mode.
+        void mirrorToOtherCams(uint8_t *ram, uint32_t cam)
+        {
+            for (uint32_t i = 0; i < 3; ++i)
+            {
+                const uint32_t other = kCams + i * kCamSize;
+                if (other == cam)
+                    continue;
+                for (uint32_t off : {kCamFront, kCamSource, kCamUp, kCamTarget})
+                    for (uint32_t k = 0; k < 12; k += 4)
+                        wrf(ram, other + off + k, rdf(ram, cam + off + k));
+                wrf(ram, other + kCamFov, rdf(ram, cam + kCamFov));
+            }
         }
 
         // A short near plane while the camera is in a head.
@@ -302,9 +336,14 @@ namespace vcs::firstperson
             const float sa = std::sin(a), ca = std::cos(a), sp = std::sin(g_pitch), cp = std::cos(g_pitch);
             const float dl[3] = {-sa * cp, ca * cp, sp}, ul[3] = {sa * sp, -ca * sp, cp}; // vehicle space: x right, y ahead
             const bool head = g_headVehicle == veh && rd32(ram, kFrameCounter) - g_headFrame <= 4u;
-            const float el[3] = {(head ? g_headLocal[0] : kSeatEye[0]) + g_eyeCm[0].load(std::memory_order_relaxed) / 100.0f,
-                                 (head ? g_headLocal[1] + kEyeForward : kSeatEye[1]) + g_eyeCm[1].load(std::memory_order_relaxed) / 100.0f,
-                                 (head ? g_headLocal[2] + kEyeUp : kSeatEye[2]) + g_eyeCm[2].load(std::memory_order_relaxed) / 100.0f};
+            // the head joint (a car's driver kept inside the cabin: closing the door he leans out into its pillar)
+            float hl[3] = {head ? g_headLocal[0] : kSeatEye[0], head ? g_headLocal[1] : kSeatEye[1] - kEyeForward,
+                           head ? g_headLocal[2] : kSeatEye[2] - kEyeUp};
+            if (rd32(ram, veh + kVehicleType) == 0)
+                hl[0] = cabinX(hl[0]);
+            const float el[3] = {hl[0] + g_eyeCm[0].load(std::memory_order_relaxed) / 100.0f,
+                                 hl[1] + kEyeForward + g_eyeCm[1].load(std::memory_order_relaxed) / 100.0f,
+                                 hl[2] + kEyeUp + g_eyeCm[2].load(std::memory_order_relaxed) / 100.0f};
             float src[3], dir[3], up[3];
             for (int i = 0; i < 3; ++i)
             {
@@ -312,11 +351,15 @@ namespace vcs::firstperson
                 dir[i] = r[i] * dl[0] + f[i] * dl[1] + u[i] * dl[2];
                 up[i] = r[i] * ul[0] + f[i] * ul[1] + u[i] * ul[2];
             }
+            for (int i = 0; i < 3; ++i) // where this view has the head joint: the draw puts it there (afterBones)
+                g_camHead[i] = p[i] + r[i] * hl[0] + f[i] * hl[1] + u[i] * hl[2];
+            g_camHeadFrame = head ? rd32(ram, kFrameCounter) : 0u;
             wrVec(ram, cam + kCamSource, src[0], src[1], src[2]);
             wrVec(ram, cam + kCamFront, dir[0], dir[1], dir[2]);
             wrVec(ram, cam + kCamUp, up[0], up[1], up[2]);
             wrVec(ram, cam + kCamTarget, src[0] + dir[0], src[1] + dir[1], src[2] + dir[2]);
             wrf(ram, cam + kCamFov, static_cast<float>(g_fov.load(std::memory_order_relaxed)));
+            mirrorToOtherCams(ram, cam);
             shortNear(ram);
             // a drive-by (the game's: L2 / R2 looking aside with an SMG) aims along this view
             freeaim::frameDriveBy(ram, ped, (look == 1 || look == 2) && freeaim::wantsDriveBy(ram, ped),
@@ -524,11 +567,15 @@ namespace vcs::firstperson
                 if (const uint32_t veh = rd32(ram, ped + kPedVehicle); veh && g_headVehicle == veh && frame - g_headFrame <= 4u)
                 {
                     const uint32_t m = vehicleMatrix(ram, veh);
+                    const float hx0 = rd32(ram, veh + kVehicleType) == 0 ? cabinX(g_headLocal[0]) : g_headLocal[0];
                     for (int i = 0; i < 3; ++i)
-                        src[i] = rdf(ram, m + 0x30u + 4u * i) + rdf(ram, m + 4u * i) * g_headLocal[0] +
+                        src[i] = rdf(ram, m + 0x30u + 4u * i) + rdf(ram, m + 4u * i) * hx0 +
                                  rdf(ram, m + 0x10u + 4u * i) * g_headLocal[1] + rdf(ram, m + 0x20u + 4u * i) * g_headLocal[2];
                     for (int i = 0; i < 3; ++i)
                         src[i] += g_eyeHead[i];
+                    for (int i = 0; i < 3; ++i) // the head joint this view assumes: the draw brings it there (afterBones)
+                        g_camHead[i] = src[i] - g_eyeHead[i];
+                    g_camHeadFrame = frame;
                 }
                 // the settings' offset, along the ped's right / forward and up
                 const float ox = g_eyeCm[0].load(std::memory_order_relaxed) / 100.0f,
@@ -550,7 +597,7 @@ namespace vcs::firstperson
                 {
                     const float d[3] = {src[0] - g_lastEye[0], src[1] - g_lastEye[1], src[2] - g_lastEye[2]};
                     const bool jump = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > kEyeJump * kEyeJump;
-                    if (g_lastEyeValid && jump && g_eyeHeld < 3 && frame - g_lastEyeFrame <= 2u)
+                    if (g_lastEyeValid && jump && g_eyeHeld < 3 && frame - g_lastEyeFrame <= 2u && rd32(ram, ped + kPedVehicle))
                     {
                         std::copy(g_lastEye, g_lastEye + 3, src);
                         ++g_eyeHeld;
@@ -639,7 +686,10 @@ namespace vcs::firstperson
             }
 
             if (first)
+            {
                 shortNear(ram); // the camera is inside the head, the arms and the gun are close
+                mirrorToOtherCams(ram, cam);
+            }
             else
                 restoreNear(ram);
             freeaim::frame(ram, ped, aiming, first ? freeaim::View::FirstPerson : freeaim::View::Aim, src, dir, g_yaw, g_pitch);
@@ -665,6 +715,19 @@ namespace vcs::firstperson
             }
             if (!update(rdram, cam))
                 return g_origHeight(rdram, ctx, runtime);
+            // first person's view noted for setFov: switching modes (on foot <-> vehicle) CCamera blends the old camera
+            // into the new one for about half a second from its own copy of the old - the game's third-person camera -
+            // and the blend went through the car's roof and door (dark frames getting in and out)
+            if (g_hideHead)
+            {
+                for (uint32_t k = 0; k < 3; ++k)
+                {
+                    g_fpView[0][k] = rdf(rdram, cam + kCamSource + 4u * k);
+                    g_fpView[1][k] = rdf(rdram, cam + kCamFront + 4u * k);
+                    g_fpView[2][k] = rdf(rdram, cam + kCamUp + 4u * k);
+                }
+                g_fpViewFrame = rd32(rdram, kFrameCounter);
+            }
             mod::setPc(ctx, mod::gpr32(ctx, 31));
         }
 
@@ -672,7 +735,10 @@ namespace vcs::firstperson
         VCS_GUEST_CC void treeUpdate(uint8_t *rdram, VcsGuestContext *ctx, void *runtime)
         {
             if (mod::gpr32(ctx, 31) == kTreeUpdateInPedRender && mod::gpr32(ctx, 16) && mod::gpr32(ctx, 16) == rd32(rdram, kPlayerPed))
+            {
                 g_tree = mod::gpr32(ctx, 4);
+                g_dbgTreeFrame = rd32(rdram, kFrameCounter);
+            }
             return g_origTreeUpdate(rdram, ctx, runtime);
         }
 
@@ -682,6 +748,8 @@ namespace vcs::firstperson
         VCS_GUEST_CC void afterBones(uint8_t *rdram, VcsGuestContext *ctx, void *runtime)
         {
             const uint32_t ped = mod::gpr32(ctx, 4);
+            if (mod::gpr32(ctx, 31) == kAfterBonesInPedRender && ped && ped == rd32(rdram, kPlayerPed))
+                g_dbgAfterFrame = rd32(rdram, kFrameCounter);
             if (mod::gpr32(ctx, 31) == kAfterBonesInPedRender && ped && ped == rd32(rdram, kPlayerPed) && g_tree &&
                 rd32(rdram, g_tree + kTreeNodes) == kPedBones)
             {
@@ -690,8 +758,19 @@ namespace vcs::firstperson
                 const float px = rdf(rdram, ped + kPedPosition), py = rdf(rdram, ped + kPedPosition + 4), pz = rdf(rdram, ped + kPedPosition + 8);
                 const float hx = rdf(rdram, head + 0x30), hy = rdf(rdram, head + 0x34), hz = rdf(rdram, head + 0x38);
                 const float dx = hx - px, dy = hy - py, dz = hz - pz;
-                if (bones && dx * dx + dy * dy + dz * dz < 4.0f) // the tree is this ped's (2 m of its position)
+                // the tree is this ped's: its head within 2 m of his position - or, while he has a vehicle, 3 m of the
+                // vehicle's (getting in and out his position lags the anim by metres: the head was left drawn and the
+                // eyes stale for those frames)
+                bool ours = dx * dx + dy * dy + dz * dz < 4.0f;
+                if (const uint32_t v = rd32(rdram, ped + kPedVehicle); !ours && v)
                 {
+                    const float vx = hx - rdf(rdram, v + 0x30), vy = hy - rdf(rdram, v + 0x34), vz = hz - rdf(rdram, v + 0x38);
+                    ours = vx * vx + vy * vy + vz * vz < 9.0f;
+                }
+                g_dbgOurs = ours ? 1u : 0u;
+                if (bones && ours)
+                {
+                    g_dbgDoneFrame = rd32(rdram, kFrameCounter);
                     const float fx = rdf(rdram, ped + kPedForward), fy = rdf(rdram, ped + kPedForward + 4);
                     g_eye[0] = dx + fx * kEyeForward;
                     g_eye[1] = dy + fy * kEyeForward;
@@ -718,7 +797,28 @@ namespace vcs::firstperson
                             g_headFrame = g_eyeFrame;
                         }
                     }
+                    // getting in or out of a vehicle the head moves fast (he ducks onto the seat) and the camera, worked out
+                    // before this draw, used the last one's: the drawn body is moved by the difference so the head is
+                    // at the camera this frame (no gap between the view and the neck)
+                    bool entering = false;
+                    if (!g_noFollow && g_hideHead && rd32(rdram, ped + kPedVehicle) && g_camHeadFrame && rd32(rdram, kFrameCounter) - g_camHeadFrame <= 1u)
+                    {
+                        const float d[3] = {g_camHead[0] - hx, g_camHead[1] - hy, g_camHead[2] - hz};
+                        if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < kBodyFollowMax * kBodyFollowMax)
+                        {
+                            for (uint32_t b = 0; b < kPedBones; ++b)
+                                for (int i = 0; i < 3; ++i)
+                                {
+                                    const uint32_t a = bones + b * 0x40u + 0x30u + 4u * i;
+                                    wrf(rdram, a, rdf(rdram, a) + d[i]);
+                                }
+                            entering = true;
+                        }
+                    }
                     viewmodel::apply(rdram, ped, bones); // first person: the arms and gun in view (viewmodel.h)
+                    if (g_hideHead && entering) // the neck too: the view looks down past it onto the seat
+                        for (uint32_t row = 0; row < 3; ++row)
+                            wrVec(rdram, bones + kNeckBone * 0x40u + row * 0x10u, 0.0f, 0.0f, 0.0f);
                     if (g_hideHead)
                         for (uint32_t b : {kHeadBone, kHeadEndBone})
                             for (uint32_t row = 0; row < 3; ++row)
@@ -732,6 +832,18 @@ namespace vcs::firstperson
         // settings (70 = the game's), ours (first person, the aim, the free camera) and every other camera left alone.
         VCS_GUEST_CC void setFov(uint8_t *rdram, VcsGuestContext *ctx, void *runtime)
         {
+            // first person: the frame's camera is its view, whatever CCamera::Process blended or shook (TheCamera's matrix:
+            // rows up x forward, forward, up, position; the RW camera is set from it after this)
+            if (mod::gpr32(ctx, 31) == kSetFovInCameraProcess && g_on && g_hideHead && !mod::freecamFlying() &&
+                g_fpViewFrame == rd32(rdram, kFrameCounter))
+            {
+                const float *f = g_fpView[1], *u = g_fpView[2];
+                const float l[3] = {u[1] * f[2] - u[2] * f[1], u[2] * f[0] - u[0] * f[2], u[0] * f[1] - u[1] * f[0]};
+                wrVec(rdram, kTheCamera + 0x00u, l[0], l[1], l[2]);
+                wrVec(rdram, kTheCamera + 0x10u, f[0], f[1], f[2]);
+                wrVec(rdram, kTheCamera + 0x20u, u[0], u[1], u[2]);
+                wrVec(rdram, kTheCamera + 0x30u, g_fpView[0][0], g_fpView[0][1], g_fpView[0][2]);
+            }
             if (mod::gpr32(ctx, 31) == kSetFovInCameraProcess && !g_on && !mod::freecamFlying())
             {
                 const uint32_t mode = rd32(rdram, kCams + rdram[kActiveCam] * kCamSize + kCamMode) & 0xFFFFu;
@@ -870,12 +982,13 @@ namespace vcs::firstperson
                 std::lock_guard<std::mutex> lock(g_statusMutex);
                 st = g_status;
             }
-            char text[288];
+            char text[420];
             std::snprintf(text, sizeof(text),
                           "ok enabled=%d on=%d looking=%d yaw=%.4f pitch=%.4f tree=%08x eye=%.3f,%.3f,%.3f aim=%.2f gamedist=%.2f "
-                          "drive=%.2f",
+                          "drive=%.2f headveh=%.3f,%.3f,%.3f dbg=%u,%u,%u,%u,%u",
                           g_enabled ? 1 : 0, st.on ? 1 : 0, g_looking ? 1 : 0, st.yaw, st.pitch, st.tree, st.eye[0],
-                          st.eye[1], st.eye[2], st.aim, st.gameDistance, st.drive);
+                          st.eye[1], st.eye[2], st.aim, st.gameDistance, st.drive, g_headLocal[0], g_headLocal[1],
+                          g_headLocal[2], rd32(mod::api->rdram(), kFrameCounter), g_dbgTreeFrame, g_dbgAfterFrame, g_dbgDoneFrame, g_dbgOurs);
             reply(text);
         });
     }
