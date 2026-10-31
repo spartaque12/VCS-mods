@@ -4,7 +4,8 @@
 // depth slices (bounding spheres, a light basis tied to the world's axes and centres snapped to whole texels, so the maps
 // do not shimmer while the camera turns); the renderer draws the scene's opaque draws into them (render_shadow_map); one
 // full-screen pass multiplies the shadows into the picture (shaders/shadows.hlsl). Main thread, inside the render hook.
-// Limits: only what the game drew this frame casts (nothing off screen), and leaves cast as their solid quads.
+// Limits: peds and vehicles cast only while on screen (the renderer remembers static world meshes seen before), and
+// leaves cast as their solid quads.
 #include "renderhook.h"
 
 #include "mod.h"
@@ -53,7 +54,7 @@ namespace vcs::renderhook
         uint64_t g_frames = 0, g_skipped = 0;
         uint32_t g_drawn = 0;
         float g_sunWorld[3] = {}, g_sunView[3] = {}, g_day = 0.0f;
-        int g_viewValid = 0;
+        int g_viewValid = 0, g_positionValid = 0;
         std::string g_problem;
 
         struct Shader
@@ -174,6 +175,10 @@ namespace vcs::renderhook
         {
             return {m[0] * v.x + m[1] * v.y + m[2] * v.z, m[3] * v.x + m[4] * v.y + m[5] * v.z, m[6] * v.x + m[7] * v.y + m[8] * v.z};
         }
+        V3 rotateBack(const float m[9], V3 v) // the transpose
+        {
+            return {m[0] * v.x + m[3] * v.y + m[6] * v.z, m[1] * v.x + m[4] * v.y + m[7] * v.z, m[2] * v.x + m[5] * v.y + m[8] * v.z};
+        }
 
         // the timecycle's newest sun vector (world: x east, y north, z up), or false if the game's RAM says otherwise
         bool sunWorld(V3 &out)
@@ -223,6 +228,15 @@ namespace vcs::renderhook
             if (std::fabs(dot(ref, s)) > 0.9f)
                 ref = rotate(f->world_to_view, {0.0f, 1.0f, 0.0f});
             const V3 u = normalise(ref - s * dot(ref, s)), v = cross(s, u);
+            // the camera's offset along u and v in the world (VcsRenderFrame.camera_position; R^T turns u, v back)
+            float worldU = 0.0f, worldV = 0.0f;
+            if (f->size >= offsetof(VcsRenderFrame, camera_position) + sizeof(f->camera_position) && f->position_valid)
+            {
+                const V3 cam = {f->camera_position[0], f->camera_position[1], f->camera_position[2]};
+                worldU = dot(rotateBack(f->world_to_view, u), cam);
+                worldV = dot(rotateBack(f->world_to_view, v), cam);
+            }
+            g_positionValid = f->size >= offsetof(VcsRenderFrame, camera_position) + sizeof(f->camera_position) ? f->position_valid : 0;
             Constants c = {};
             float splits[kCascades + 1];
             splits[0] = kNear;
@@ -253,9 +267,10 @@ namespace vcs::renderhook
                 r = std::ceil(r * 4.0f) / 4.0f; // steady across small lens changes (the car camera's widening)
                 const V3 centre = {axisX * zc, axisY * zc, zc};
                 const float texelSize = 2.0f * r / static_cast<float>(n);
-                // snapped to whole texels in the light's plane, measured from the camera: steady while the camera turns
-                const float cu = std::floor(dot(u, centre) / texelSize) * texelSize;
-                const float cv = std::floor(dot(v, centre) / texelSize) * texelSize;
+                // snapped to whole texels in the light's plane, measured in the world when the renderer knows where the
+                // camera is (steady while it moves and turns), else from the camera (steady while it turns)
+                const float cu = std::floor((dot(u, centre) + worldU) / texelSize) * texelSize - worldU;
+                const float cv = std::floor((dot(v, centre) + worldV) / texelSize) * texelSize - worldV;
                 const float cs = dot(s, centre);
                 const float back = r, range = r + r + kCasterReach;
                 float *m = matrices[i];
@@ -335,10 +350,10 @@ namespace vcs::renderhook
             }
             char line[400];
             std::snprintf(line, sizeof(line),
-                          "ok level %d view %d hooked %d frames %llu skipped %llu view_valid %d sun_world %.3f %.3f %.3f sun_view %.3f "
+                          "ok level %d view %d hooked %d frames %llu skipped %llu view_valid %d position_valid %d sun_world %.3f %.3f %.3f sun_view %.3f "
                           "%.3f %.3f day %.2f casters %u%s%s",
                           g_level.load(), g_view.load(), g_hooked ? 1 : 0, static_cast<unsigned long long>(g_frames),
-                          static_cast<unsigned long long>(g_skipped), g_viewValid, g_sunWorld[0], g_sunWorld[1], g_sunWorld[2], g_sunView[0],
+                          static_cast<unsigned long long>(g_skipped), g_viewValid, g_positionValid, g_sunWorld[0], g_sunWorld[1], g_sunWorld[2], g_sunView[0],
                           g_sunView[1], g_sunView[2], g_day, g_drawn, g_problem.empty() ? "" : " problem ", g_problem.c_str());
             reply(line);
         });

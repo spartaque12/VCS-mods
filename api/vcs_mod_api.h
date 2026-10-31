@@ -252,6 +252,12 @@ typedef struct VcsRenderFrame
      * x east, y north, z up (metres), view as above (x right, y down, w forward). */
     int view_valid;
     float world_to_view[9];
+    /* -- appended 2026-11-01 (check size >= offsetof(VcsRenderFrame, camera_position) + sizeof(camera_position)) -- the
+     * camera's position (position_valid; hooks with VCS_RENDER_NEEDS_SHADOW) in a frame of reference the renderer keeps
+     * from the static world's draws: world axes, metres, an origin of the renderer's own (renewed after a teleport) - for
+     * differences between frames, e.g. snapping shadow maps to the world. */
+    int position_valid;
+    float camera_position[3];
 } VcsRenderFrame;
 
 typedef void (*VcsRenderHookFn)(void *user, const VcsRenderFrame *frame);
@@ -449,8 +455,9 @@ typedef struct VcsModApi
      * ones solid) drawn depth only into `count` (1..4) square viewports of `size` (64..4096) pixels
      * side by side - a depth texture of size * count x size, NULL if refused. view_to_clip: count row-major 4x4 matrices
      * from view space (VcsRenderFrame: x right, y down, w forward, metres) to clip space (x, y -1..1 with y up, z 0..1 with
-     * larger = nearer the light; cleared to 0). Draws through the GS path (geometry crossing the screen's guard band) and
-     * objects the game did not draw this frame (off screen) are not in it. `drawn` (may be NULL): draws drawn. */
+     * larger = nearer the light; cleared to 0). Draws through the GS path (geometry crossing the screen's guard band) are
+     * not in it; static world meshes seen before and now off screen are drawn too, where they were (peds and vehicles off
+     * screen are not). `drawn` (may be NULL): draws drawn. */
     VcsRenderTexture *(*render_shadow_map)(const float *view_to_clip, uint32_t count, uint32_t size, uint32_t *drawn);
 } VcsModApi;
 
