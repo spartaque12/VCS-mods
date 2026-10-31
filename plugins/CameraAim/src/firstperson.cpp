@@ -141,7 +141,6 @@ namespace vcs::firstperson
         std::mutex g_lookMutex;
         float g_lookYaw = 0.0f, g_lookPitch = 0.0f;
 
-        // for the control channel's "firstperson" (another thread)
         // the VR mod's head look (setHeadLook, VR.asi): the head's yaw (left +) / pitch (up +) / roll (right +) about the
         // body's view, radians; first person on foot only
         std::mutex g_headMutex;
@@ -149,6 +148,7 @@ namespace vcs::firstperson
         float g_headYaw = 0.0f, g_headPitch = 0.0f, g_headRoll = 0.0f;
         std::atomic<uint32_t> g_headAppliedFrame{0}; // the game frame (CTimer::m_FrameCounter + 1) first person on foot last took the head look
 
+        // for the control channel's "firstperson" (another thread)
         struct Status
         {
             bool on = false;
@@ -623,6 +623,22 @@ namespace vcs::firstperson
             g_looking = turning;
             g_hideHead = first;
 
+            // the VR mod's head look: the view is the body's yaw (mouse / stick) turned by the head; the head alone pitches
+            bool head = false;
+            float headYaw = 0.0f, headPitch = 0.0f, headRoll = 0.0f;
+            {
+                std::lock_guard<std::mutex> lock(g_headMutex);
+                head = g_headOn && first && mode == kModeFollowPed;
+                headYaw = g_headYaw, headPitch = g_headPitch, headRoll = g_headRoll;
+            }
+            if (head)
+            {
+                g_headAppliedFrame.store(rd32(ram, kFrameCounter) + 1u, std::memory_order_relaxed);
+                g_pitch = 0.0f;
+            }
+            const float viewYaw = head ? wrap(g_yaw + headYaw) : g_yaw;
+            const float viewPitch = head ? std::clamp(headPitch, -1.55f, 1.55f) : g_pitch;
+
             const float px = rdf(ram, ped + kPedPosition), py = rdf(ram, ped + kPedPosition + 4), pz = rdf(ram, ped + kPedPosition + 8);
             const float cy = std::cos(viewYaw), sy = std::sin(viewYaw), cp = std::cos(viewPitch), sp = std::sin(viewPitch);
             const float front[3] = {cp * cy, cp * sy, sp};
@@ -683,22 +699,6 @@ namespace vcs::firstperson
                     const float d[3] = {src[0] - g_lastEye[0], src[1] - g_lastEye[1], src[2] - g_lastEye[2]};
                     const bool jump = d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > kEyeJump * kEyeJump;
                     // (on foot only the frame his position is set anew - out of a vehicle: the eyes from the last draw
-            // the VR mod's head look: the view is the body's yaw (mouse / stick) turned by the head; the head alone pitches
-            bool head = false;
-            float headYaw = 0.0f, headPitch = 0.0f, headRoll = 0.0f;
-            {
-                std::lock_guard<std::mutex> lock(g_headMutex);
-                head = g_headOn && first && mode == kModeFollowPed;
-                headYaw = g_headYaw, headPitch = g_headPitch, headRoll = g_headRoll;
-            }
-            if (head)
-            {
-                g_headAppliedFrame.store(rd32(ram, kFrameCounter) + 1u, std::memory_order_relaxed);
-                g_pitch = 0.0f;
-            }
-            const float viewYaw = head ? wrap(g_yaw + headYaw) : g_yaw;
-            const float viewPitch = head ? std::clamp(headPitch, -1.55f, 1.55f) : g_pitch;
-
                     // are carried with a position the draw did not have)
                     const float pj[3] = {px - g_lastPed[0], py - g_lastPed[1], pz - g_lastPed[2]};
                     const bool snapped = pj[0] * pj[0] + pj[1] * pj[1] + pj[2] * pj[2] > kEyeJump * kEyeJump;
@@ -1121,7 +1121,6 @@ namespace vcs::firstperson
         g_lookYaw += yaw;
         g_lookPitch += pitch;
     }
-}
 
     void setHeadLook(bool on, float yaw, float pitch, float roll)
     {
@@ -1139,3 +1138,4 @@ namespace vcs::firstperson
         const uint8_t *ram = mod::api->rdram();
         return g_installed.load(std::memory_order_relaxed) && at && ram && rd32(ram, kFrameCounter) + 1u - at <= 3u;
     }
+}
