@@ -157,6 +157,18 @@ changes; every spec violation it sees is logged as `VALIDATION`. The loader is b
 KhronosGroup/OpenXR-SDK release-1.1.65 (FetchContent; `-DFETCHCONTENT_SOURCE_DIR_OPENXR_SDK=<dir>` offline;
 `-DVR_BUILD_OPENXR_LOADER=OFF` to bring your own).
 
+### PedSkills.asi - head shots with any gun
+
+One bullet in a ped's head kills it with any gun - pistols, SMGs, rifles, shotgun pellets, the M60 and minigun,
+drive-by shots - not only with the rifles the game gives it to (VCS, as VC, kills at once on a head hit with the sniper
+rifles, M4, Ruger and M60, and with other guns 1 time in 16). It is the game's own head shot: the head comes off (with
+gore on), the face-hit death, armour no help. Works with lock-on and free aim. Melee, explosions and fire are unchanged;
+peds a mission protects from critical hits, bullet-proof or invulnerable peds stay as the game decides. Settings (F2,
+Game page, "Ped skills"): `pedskills.headshots` (on; `VCS_HEADSHOTS`) and `pedskills.everyone` (off;
+`VCS_HEADSHOTS_EVERYONE`: every ped's head shots count, Vic can be one-shot too). Tests: `VCS_PEDSKILLS_HOOKS=0` hooks
+nothing, `VCS_PEDSKILLS_LOG=1` logs the player's hits and every head shot made, the control command `pedskills` reports
+counts and the last hit. How the game decides: the port's docs/game-internals.md 12v.
+
 ## Building
 
 Windows, with Visual Studio's clang-cl (the C++ Clang tools) and CMake + Ninja, from a "x64 Native Tools" prompt:
