@@ -28,6 +28,18 @@ namespace vcs::jolt
         constexpr uint32_t kTreeUpdateInPedRender = 0x003C3280u; // its return address in FUN_003c3250 (s0 = the ped)
         constexpr uint32_t kAfterBones = 0x0020C310u;            // CPed::IsPlayer, called by the ped's render next
         constexpr uint32_t kAfterBonesInPedRender = 0x00200740u; // its return address there (a0 = the ped)
+        // A part gone on whole (a head shot off) is a second draw of the ped's skinned element. CPed::Render only builds
+        // the bones; the renderer calls the element's render callback (FUN_0036eb70, a0 the element) later, and what it
+        // queues is drawn at the frame's end through the element's anim tree and the tree's matrices (+0x28) - so the
+        // second draw is a copy of the element pointing at a copy of the tree pointing at matrices of its own (one slot
+        // each, in the main heap), passed to the callback after the element itself.
+        constexpr uint32_t kElementRender = 0x0036EB70u;
+        constexpr uint32_t kElementAgain = 0x0036EB74u;  // inside it, no entry: the continuation of the second call ...
+        constexpr uint32_t kPoolMade = 0x0036EB78u;      // ... and of the slots' allocation
+        constexpr uint32_t kMainHeapAlloc = 0x002BD178u; // FUN_002BD178(size): the main heap's malloc (v0)
+        constexpr uint32_t kSlotMatrices = 0, kSlotTree = 25u * 0x40u, kTreeCopy = 0x400u, kSlotElement = kSlotTree + kTreeCopy,
+                           kElementCopy = 0x40u, kPoolSlot = kSlotElement + kElementCopy;
+        constexpr uint32_t kPoolSlots = 8; // loose parts drawn in a frame
         // CPed::InflictDamage(ped a0, attacker a1, weapon a2, damage f12, piece a3, direction t0); it calls SetDie
         constexpr uint32_t kInflictDamage = 0x001D7940u;
         constexpr int kBlastDamage = 0x31; // its weapon for a blast (CWorld::TriggerExplosion's)
@@ -232,6 +244,8 @@ namespace vcs::jolt
             // dismemberment: the bones taken off (a bit each), the stumps they hang from, the blood still to come
             uint32_t severed = 0;
             int stumps = 0, stumpBone[6] = {}, stumpParent[6] = {};
+            bool stumpKept[6] = {};   // the part goes on whole, a loose body (a head shot off: Keep severed heads) ...
+            float stumpReach[6] = {}; // ... and the stump is this far along its parent bone (the neck's length)
             uint32_t bleedUntil = 0, nextDrop = 0;
             int burst = 0;
             bool bloodNow = false;           // a drop at the next ApplyMoveSpeed ...
@@ -307,6 +321,7 @@ namespace vcs::jolt
         std::atomic<bool> g_catchFall{true};    // Catch falls (with Ragdolls on)
         std::atomic<bool> g_blindFire{true};    // Fire back from the ground (with Ragdolls on)
         std::atomic<bool> g_gore{false};        // Dismemberment (with Ragdolls on)
+        std::atomic<bool> g_keepHeads{true};    // ... a head shot off rolls away whole instead of bursting
         uint32_t g_goreSeed = 12345u;
         std::atomic<int> g_force{100}; // Hit force, percent
         bool g_worldOn = true;         // VCS_JOLT_WORLD=0: no world collision (each ragdoll on a ground of its own)
@@ -314,6 +329,15 @@ namespace vcs::jolt
                                        g_origTree = nullptr, g_origAfterBones = nullptr, g_origInflict = nullptr,
                                        g_origLineOfSight = nullptr, g_origExplosion = nullptr, g_origKnockOff = nullptr, g_origFire = nullptr, g_origParticle = nullptr,
                                        g_origPickupEffects = nullptr, g_origMoneyEffects = nullptr;
+        VcsGuestFn g_origElementRender = nullptr;
+        bool g_secondDrawOk = false;  // kElementAgain / kPoolMade registered, the callback hooked
+        uint32_t g_pool = 0;          // kPoolSlots slots in the main heap (64-byte aligned), once made
+        bool g_poolTried = false;
+        uint32_t g_poolFrame = 0, g_poolUsed = 0; // slots handed out in this frame
+        // the callback being called twice: 1 for the element, 2 for its copy (-1 the allocation); where it returns to
+        int g_drawStage = 0;
+        uint32_t g_drawElement = 0, g_drawCopy = 0, g_drawReturn = 0;
+        unsigned g_looseDraws = 0;
 
         // game thread
         std::unordered_map<uint32_t, Death> g_pending; // ped -> its death, until its next draw
@@ -651,14 +675,25 @@ namespace vcs::jolt
             d.severed |= bones;
             d.stumpBone[d.stumps] = root;
             d.stumpParent[d.stumps] = kPedParentBone[root];
-            ++d.stumps;
-            if (d.id)
+            // a head kept whole: let go of the neck and thrown up and a little aside, the stump where the neck ends
+            const bool keep = d.id && part == physics::kHead && g_keepHeads.load(std::memory_order_relaxed) && g_secondDrawOk;
+            d.stumpKept[d.stumps] = keep;
+            if (keep)
+            {
+                const float *head = d.bones[root].m + 12, *neck = d.bones[kPedParentBone[root]].m + 12;
+                const float along[3] = {head[0] - neck[0], head[1] - neck[1], head[2] - neck[2]};
+                d.stumpReach[d.stumps] = length(along);
+                const float throwOff[3] = {(goreRandom() - 0.5f) * 2.0f, (goreRandom() - 0.5f) * 2.0f, 2.0f + goreRandom()};
+                physics::detach(d.id, part, throwOff);
+            }
+            else if (d.id)
                 physics::sever(d.id, part);
+            ++d.stumps;
             d.bleedUntil = ms + kBleedMs;
             d.burst += part == physics::kHead ? kHeadBurst : kBurst;
             ++g_severed;
-            std::fprintf(stderr, "[jolt] ped %08X: %s (bone %d) taken off - %s\n", ped,
-                         part == physics::kHead ? "head" : "limb", root, why);
+            std::fprintf(stderr, "[jolt] ped %08X: %s (bone %d) taken off%s - %s\n", ped,
+                         part == physics::kHead ? "head" : "limb", root, keep ? " whole" : "", why);
             return true;
         }
 
@@ -667,10 +702,12 @@ namespace vcs::jolt
         {
             if (weapon < 0 || weapon >= int(std::size(kSever)))
                 return;
-            const int part = piecePart(piece, g_goreSeed >> 4);
+            // tests: VCS_JOLT_HEADSHOTS=1 - every killing hit takes the head
+            static const bool headshots = [] { const char *e = std::getenv("VCS_JOLT_HEADSHOTS"); return e && e[0] == '1'; }();
+            const int part = headshots ? int(physics::kHead) : piecePart(piece, g_goreSeed >> 4);
             if (part < 0)
                 return;
-            const float chance = part == physics::kHead ? kSever[weapon].head : kSever[weapon].limb;
+            const float chance = headshots ? 1.0f : part == physics::kHead ? kSever[weapon].head : kSever[weapon].limb;
             if (chance > 0.0f && goreRandom() < chance)
                 sever(d, ped, part, ms, part == physics::kHead ? "head burst" : "hit");
         }
@@ -694,15 +731,59 @@ namespace vcs::jolt
             }
         }
 
-        // The pose as drawn: a stump's bones collapsed onto the joint they hang from.
-        void stumped(const Doll &d, const physics::BoneMatrix *in, physics::BoneMatrix *out)
+        // Where a stump is: the joint its part hung from - for a part gone on whole (elsewhere now), the end of the bone it
+        // hung from (a bone's X runs along it).
+        void stumpJoint(const Doll &d, int s, const physics::BoneMatrix *in, float *joint)
+        {
+            const float *at = in[d.stumpBone[s]].m + 12;
+            if (d.stumpKept[s])
+            {
+                const float *parent = in[d.stumpParent[s]].m;
+                for (int k = 0; k < 3; ++k)
+                    joint[k] = parent[12 + k] + parent[k] * d.stumpReach[s];
+            }
+            else
+                std::copy(at, at + 3, joint);
+        }
+
+        bool inPart(int bone, int top)
+        {
+            while (bone >= 0 && bone != top)
+                bone = kPedParentBone[bone];
+            return bone == top;
+        }
+
+        // The pose as drawn: a stump's bones collapsed onto the joint they hang from. A part gone on whole is drawn by a
+        // second render of the ped (pedRender, `loose`): there only that part, where its body is - every other bone
+        // collapsed onto the part's own joint - so the skin weighted across the cut closes up at both ends instead of
+        // stretching from the body to the part.
+        void stumped(const Doll &d, const physics::BoneMatrix *in, physics::BoneMatrix *out, bool loose = false)
         {
             std::copy(in, in + kBones, out);
             if (!d.severed)
                 return;
+            if (loose)
+            {
+                int top = -1;
+                for (int s = 0; s < d.stumps && top < 0; ++s)
+                    if (d.stumpKept[s])
+                        top = d.stumpBone[s];
+                if (top < 0)
+                    return;
+                const float *joint = in[top].m + 12;
+                for (int i = 0; i < kBones; ++i)
+                {
+                    if (inPart(i, top))
+                        continue;
+                    std::fill(out[i].m, out[i].m + 12, 0.0f);
+                    std::copy(joint, joint + 3, out[i].m + 12);
+                }
+                return;
+            }
             for (int s = 0; s < d.stumps; ++s)
             {
-                const float *joint = in[d.stumpBone[s]].m + 12;
+                float joint[3];
+                stumpJoint(d, s, in, joint);
                 for (int i = 0; i < kBones; ++i)
                 {
                     int up = i;
@@ -724,7 +805,9 @@ namespace vcs::jolt
             if (!d.stumps || d.bloodNow || (!d.burst && ms >= d.bleedUntil) || (!d.burst && ms < d.nextDrop))
                 return;
             const int s = int(g_goreSeed % uint32_t(d.stumps));
-            const float *joint = d.bones[d.stumpBone[s]].m + 12, *parent = d.bones[d.stumpParent[s]].m + 12;
+            float joint[3];
+            stumpJoint(d, s, d.bones, joint);
+            const float *parent = d.bones[d.stumpParent[s]].m + 12;
             float out[3] = {joint[0] - parent[0], joint[1] - parent[1], joint[2] - parent[2]};
             const float l = length(out);
             for (int k = 0; k < 3; ++k)
@@ -2187,6 +2270,118 @@ namespace vcs::jolt
                 return g_origMoneyEffects(rdram, ctx, runtime);
         }
 
+        // The loose part's draw for an element of a ped whose head went on whole (its tree in the element's first words):
+        // a slot's matrices posed with that part alone (stumped's `loose`), a copy of the tree on them and a copy of the
+        // element on that tree. 0 when the element is no such ped's or no slot is left this frame.
+        uint32_t looseCopy(uint8_t *rdram, uint32_t element)
+        {
+            for (const auto &[ped, d] : g_dolls)
+            {
+                bool loose = false;
+                for (int s = 0; s < d.stumps; ++s)
+                    loose = loose || d.stumpKept[s];
+                const auto tree = g_trees.find(ped);
+                if (!loose || d.reaction || tree == g_trees.end())
+                    continue;
+                for (uint32_t k = 0; k < kElementCopy; k += 4)
+                {
+                    if ((rd32(rdram, element + k) & kRamMask) != (tree->second & kRamMask))
+                        continue;
+                    const uint32_t frame = rd32(rdram, kFrameCounter);
+                    if (frame != g_poolFrame)
+                    {
+                        g_poolFrame = frame;
+                        g_poolUsed = 0;
+                    }
+                    if (g_poolUsed >= kPoolSlots)
+                        return 0;
+                    const uint32_t slot = g_pool + g_poolUsed++ * kPoolSlot;
+                    const uint32_t matrices = rd32(rdram, tree->second + kTreeMatrices);
+                    physics::BoneMatrix part[kBones];
+                    stumped(d, d.bones, part, true);
+                    for (int b = 0; b < kBones; ++b) // the w lanes as the game's
+                    {
+                        std::memcpy(rdram + ((slot + kSlotMatrices + b * 0x40u) & kRamMask),
+                                    rdram + ((matrices + b * 0x40u) & kRamMask), 0x40);
+                        for (int r = 0; r < 4; ++r)
+                            std::memcpy(rdram + ((slot + kSlotMatrices + b * 0x40u + r * 16u) & kRamMask), part[b].m + r * 4, 12);
+                    }
+                    std::memmove(rdram + ((slot + kSlotTree) & kRamMask), rdram + (tree->second & kRamMask), kTreeCopy);
+                    wr32(rdram, slot + kSlotTree + kTreeMatrices, slot + kSlotMatrices);
+                    std::memmove(rdram + ((slot + kSlotElement) & kRamMask), rdram + (element & kRamMask), kElementCopy);
+                    wr32(rdram, slot + kSlotElement + k, slot + kSlotTree);
+                    return slot + kSlotElement;
+                }
+            }
+            return 0;
+        }
+
+        bool anyLoose()
+        {
+            for (const auto &[ped, d] : g_dolls)
+                for (int s = 0; s < d.stumps; ++s)
+                    if (d.stumpKept[s])
+                        return true;
+            return false;
+        }
+
+        VCS_GUEST_CC void elementRender(uint8_t *rdram, VcsGuestContext *ctx, void *runtime)
+        {
+            if (g_passive || g_drawStage != 0 || !g_secondDrawOk || !anyLoose())
+                return g_origElementRender(rdram, ctx, runtime);
+            const uint32_t element = mod::gpr32(ctx, kA0);
+            if (!g_pool)
+            {
+                if (g_poolTried)
+                    return g_origElementRender(rdram, ctx, runtime);
+                // the slots first (once): the main heap's malloc, returning to kPoolMade, which calls this again
+                g_poolTried = true;
+                g_drawStage = -1;
+                g_drawElement = element;
+                g_drawReturn = mod::gpr32(ctx, kRa);
+                mod::setGpr32(ctx, kA0, kPoolSlots * kPoolSlot + 64u);
+                mod::setGpr32(ctx, kRa, kPoolMade);
+                mod::setPc(ctx, kMainHeapAlloc);
+                return;
+            }
+            const uint32_t copy = looseCopy(rdram, element);
+            if (!copy)
+                return g_origElementRender(rdram, ctx, runtime);
+            g_drawStage = 1;
+            g_drawElement = element;
+            g_drawCopy = copy;
+            g_drawReturn = mod::gpr32(ctx, kRa);
+            mod::setGpr32(ctx, kRa, kElementAgain);
+            return g_origElementRender(rdram, ctx, runtime);
+        }
+
+        VCS_GUEST_CC void poolMade(uint8_t *, VcsGuestContext *ctx, void *)
+        {
+            const uint32_t at = mod::gpr32(ctx, 2); // v0
+            g_pool = at ? (at + 63u) & ~63u : 0;
+            std::fprintf(stderr, "[jolt] severed parts' draw slots: %s 0x%08X\n", at ? "made at" : "no memory,", g_pool);
+            g_drawStage = 0; // the call that asked for them, again
+            mod::setGpr32(ctx, kA0, g_drawElement);
+            mod::setGpr32(ctx, kRa, g_drawReturn);
+            mod::setPc(ctx, kElementRender);
+        }
+
+        VCS_GUEST_CC void elementAgain(uint8_t *, VcsGuestContext *ctx, void *)
+        {
+            if (g_drawStage == 1)
+            {
+                g_drawStage = 2;
+                ++g_looseDraws;
+                mod::setGpr32(ctx, kA0, g_drawCopy);
+                mod::setGpr32(ctx, kRa, kElementAgain);
+                mod::setPc(ctx, kElementRender);
+                return;
+            }
+            g_drawStage = 0;
+            mod::setGpr32(ctx, 2, g_drawElement); // its v0: the element
+            mod::setPc(ctx, g_drawReturn);
+        }
+
         // FUN_00408c30, right after CWorld::Process (SetDie has run for this frame's deaths).
         VCS_GUEST_CC void afterWorld(uint8_t *rdram, VcsGuestContext *ctx, void *runtime)
         {
@@ -2463,11 +2658,24 @@ namespace vcs::jolt
         s.label = "Dismemberment";
         s.help = "With Ragdolls on (and the game's gore on): a lethal shot or blade can take a limb or the head off - "
                  "shotguns, rifles and the heavy guns most -, a shot on a body already down too, and blasts limbs; the "
-                 "stump bleeds. As SA's Jolt Physics mod, without its loose limb models (the part is gone).";
+                 "stump bleeds. A head shot off rolls away whole (Keep severed heads); limbs are gone.";
         s.type = Type::Toggle;
         s.defaultValue = 0;
         s.env = "VCS_JOLT_GORE";
         s.onChange = [](int v) { g_gore = v != 0; };
+        add(s);
+
+        s = {};
+        s.key = "physics.gore_keep_heads";
+        s.page = "Game";
+        s.section = "Physics";
+        s.label = "Keep severed heads";
+        s.help = "With Dismemberment: a head shot off comes off whole and falls, bounces and rolls on the ground (Jolt "
+                 "Physics) instead of bursting; the neck bleeds.";
+        s.type = Type::Toggle;
+        s.defaultValue = 1;
+        s.env = "VCS_JOLT_KEEP_HEADS";
+        s.onChange = [](int v) { g_keepHeads = v != 0; };
         add(s);
 
         s = {};
@@ -2483,6 +2691,15 @@ namespace vcs::jolt
         s.env = "VCS_JOLT_PICKUPS";
         s.onChange = [](int v) { g_pickupsOn = v != 0; };
         add(s);
+    }
+
+    bool playerRagdolled()
+    {
+        const uint8_t *ram = mod::api->rdram();
+        if (g_passive || !ram)
+            return false;
+        const auto doll = g_dolls.find(rd32(ram, kPlayerPed));
+        return doll != g_dolls.end() && !doll->second.reaction;
     }
 
     bool builtInFound()
@@ -2524,6 +2741,16 @@ namespace vcs::jolt
         mod::api->replace_function(kKnockOffRider, &knockOff);
         mod::api->replace_function(kPickupEffects, &pickupEffects);
         mod::api->replace_function(kMoneyEffects, &moneyEffects);
+        g_origElementRender = mod::api->lookup_function(kElementRender);
+        if (g_origElementRender && VCS_MOD_API_HAS(mod::api, has_function) && !mod::api->has_function(kElementAgain) &&
+            !mod::api->has_function(kPoolMade) && mod::api->register_function(kElementAgain, &elementAgain) &&
+            mod::api->register_function(kPoolMade, &poolMade))
+        {
+            mod::api->replace_function(kElementRender, &elementRender);
+            g_secondDrawOk = true;
+        }
+        else
+            std::fprintf(stderr, "[jolt] no second draw (0x%08X taken): severed heads drawn as stumps\n", kElementAgain);
         // jolt -> ok enabled= dolls= ... ped= tree= awake= pelvis=<16 floats> (tests: tools/ragdoll_check.py)
         mod::addCommand("jolt", [](const std::string &, mod::Reply reply) {
             Status st;
@@ -2536,11 +2763,11 @@ namespace vcs::jolt
                                   "ok enabled=%d dolls=%d frozen=%d pending=%d steps=%u created=%u removed=%u bodies=%u "
                                   "active=%u obstacles=%d world=%d shapes=%d shapesmade=%u corpsehits=%u blasted=%u "
                                   "knocks=%u knockdowns=%u gotup=%u props=%d propsmoving=%d propsmade=%u reactions=%u "
-                                  "reacting=%d shotdown=%u braced=%u blindshots=%u severed=%u blood=%u reactdev=%.3f clutches=%u clutchgap=%.3f stumbles=%u stumbled=%.2f stepms=%.3f ped=%08x tree=%08x awake=%d down=%d pelvis=",
+                                  "reacting=%d shotdown=%u braced=%u blindshots=%u severed=%u blood=%u loosedraws=%u reactdev=%.3f clutches=%u clutchgap=%.3f stumbles=%u stumbled=%.2f stepms=%.3f ped=%08x tree=%08x awake=%d down=%d pelvis=",
                                   g_enabled ? 1 : 0, st.dolls, st.frozen, st.pending, st.steps, st.created, st.removed,
                                   st.physics.bodies, st.physics.activeBodies, st.obstacles, st.world, st.shapes,
                                   st.shapesMade, st.corpseHits, st.blasted, st.knocks, st.knockdowns, st.gotUp, st.props,
-                                  st.propsMoving, st.propsMade, st.reactions, st.reacting, st.shotDown, st.braced, st.blindShots, st.severed, st.bloodDrops, st.reactDeviation, st.clutches, st.clutchGap, st.stumbles,
+                                  st.propsMoving, st.propsMade, st.reactions, st.reacting, st.shotDown, st.braced, st.blindShots, st.severed, st.bloodDrops, g_looseDraws, st.reactDeviation, st.clutches, st.clutchGap, st.stumbles,
                                   st.lastStumble, st.physics.stepMs, st.ped, st.tree, st.awake ? 1 : 0, st.down ? 1 : 0);
             for (int i = 0; i < 16 && n > 0 && n < int(sizeof(text)); ++i)
                 n += std::snprintf(text + n, sizeof(text) - n, i ? ",%.4f" : "%.4f", st.pelvis[i]);

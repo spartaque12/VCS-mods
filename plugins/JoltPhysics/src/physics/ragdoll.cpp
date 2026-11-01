@@ -190,6 +190,8 @@ namespace vcs::physics
             JPH::BodyID ground;                   // its own ground plane (none where the world has a surface)
             Mat44 local[kPedBones];               // each bone in its parent's frame at the start (the root: model space)
             Mat44 hipsToBone, rootFromHips;       // the hips part -> its bone; the root bone in the hips bone's frame
+            Mat44 partToBone[kPartTotal];         // each part -> its bone (the mapper's)
+            bool detached[kPartTotal] = {};       // let go of the body (detach): drawn where its body is
         };
 
         // Everything is made once and kept to the end of the process (no teardown order at exit).
@@ -513,8 +515,12 @@ namespace vcs::physics
             locked[kParts[p].bone] = true;
         doll.mapper->LockTranslations(doll.skeleton, locked, neutralBones);
         for (const JPH::SkeletonMapper::Mapping &m : doll.mapper->GetMappings())
+        {
             if (m.mJointIdx1 == 0)
                 doll.hipsToBone = m.mJoint1To2;
+            if (m.mJointIdx1 >= 0 && m.mJointIdx1 < kPartCount)
+                doll.partToBone[m.mJointIdx1] = m.mJoint1To2;
+        }
         for (int i = 0; i < kPedBones; ++i)
             doll.local[i] = kPedParents[i] >= 0 ? inverse(neutralBones[kPedParents[i]]) * neutralBones[i] : neutralBones[i];
         doll.rootFromHips = inverse(neutralBones[kHipsBone]) * neutralBones[kRootBone];
@@ -613,6 +619,22 @@ namespace vcs::physics
             if (lock.Succeeded())
                 lock.GetBody().SetIsSensor(true);
         }
+    }
+
+    void detach(int id, int part, const float velocity[3])
+    {
+        Doll *doll = find(id);
+        if (!doll || part <= 0 || part >= kPartCount || !velocity || !finite(velocity, 3))
+            return;
+        NearestRounding nearest;
+        const int index = doll->ragdoll->GetRagdollSettings()->GetConstraintIndexForBodyIndex(part);
+        if (index >= 0)
+            doll->ragdoll->GetConstraint(index)->SetEnabled(false);
+        doll->detached[part] = true;
+        JPH::BodyInterface &bodies = g_system->GetBodyInterface();
+        const JPH::BodyID body = doll->ragdoll->GetBodyID(part);
+        bodies.AddLinearVelocity(body, Vec3(velocity[0], velocity[1], velocity[2]));
+        bodies.ActivateBody(body);
     }
 
     void blast(int id, const float centre[3], float radius, float speed)
@@ -856,6 +878,23 @@ namespace vcs::physics
         // the root bone has no part above it: carried with the hips
         doll->local[kRootBone] = parts[0] * doll->hipsToBone * doll->rootFromHips;
         doll->mapper->Map(parts, doll->local, bones);
+        // a part let go of the body: its bone where its body is (the mapper keeps a part's joint on its parent), the bones
+        // below it carried with it (they come after their parents)
+        for (int p = 1; p < kPartCount; ++p)
+        {
+            if (!doll->detached[p])
+                continue;
+            const int top = kParts[p].bone;
+            bones[top] = parts[p] * doll->partToBone[p];
+            for (int i = top + 1; i < kPedBones; ++i)
+            {
+                int up = kPedParents[i];
+                while (up >= 0 && up != top)
+                    up = kPedParents[up];
+                if (up == top)
+                    bones[i] = bones[kPedParents[i]] * doll->local[i];
+            }
+        }
         for (int i = 0; i < kPedBones; ++i)
         {
             const Vec3 x = bones[i].GetAxisX(), y = bones[i].GetAxisY(), z = bones[i].GetAxisZ();

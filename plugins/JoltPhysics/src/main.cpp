@@ -14,6 +14,10 @@ extern "C"
 
     VCS_MOD_EXPORT const char *VcsModName(void) { return "JoltPhysics"; }
 
+    // For other mods (GetProcAddress on JoltPhysics.asi): 1 while Vic's body is a ragdoll - CameraAim.asi's first person
+    // then looks out of the ragdoll's head. Game thread.
+    VCS_MOD_EXPORT int JoltPhysicsPlayerRagdoll(void) { return vcs::jolt::playerRagdolled() ? 1 : 0; }
+
     VCS_MOD_EXPORT int VcsModRegister(const VcsModApi *a)
     {
         if (!a || a->version != VCS_MOD_API_VERSION || !VCS_MOD_API_HAS(a, game_dir))

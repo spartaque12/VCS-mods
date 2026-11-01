@@ -61,4 +61,8 @@ namespace vcs::jolt
     // VcsModInstallLate: whether the game's death hook is no longer this mod's - an older vcs.exe's own ragdolls
     // installed theirs around it.
     bool builtInFound();
+
+    // Vic's body is a ragdoll now (knocked down, thrown off a bike, dead), not a hit reaction: game thread
+    // (JoltPhysicsPlayerRagdoll, for CameraAim.asi's first person).
+    bool playerRagdolled();
 }

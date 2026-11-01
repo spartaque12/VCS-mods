@@ -74,6 +74,11 @@ namespace vcs::physics
     // the game side draws the stump).
     void sever(int id, int part);
 
+    // A part taken off whole (a head shot off): its joint to the body let go, so it falls, rolls and meets the world on
+    // its own (and the body), thrown at `velocity` (m/s, world space) more than it had; the pose keeps drawing its bones
+    // where it is.
+    void detach(int id, int part, const float velocity[3]);
+
     // A blast at `centre`: each part within `radius` thrown away from it (and up) at up to `speed` m/s, less the farther
     // it is - the parts nearest the blast fastest, so the body tumbles.
     void blast(int id, const float centre[3], float radius, float speed);

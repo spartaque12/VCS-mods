@@ -27,6 +27,8 @@ The camera and aiming mods of the port, together because they share one camera h
 - **First person on foot** (UltimateFP's camera): the eyes at the head joint, the head hidden, a short near clip, the
   mouse / right stick look around; standing still or attacking the player faces the view, so shots and R1's target
   search go where you look. Cutscenes and the sniper / rocket views keep the game's camera.
+- **First person on a ragdoll** (with JoltPhysics.asi): when Vic is knocked down, thrown off a bike or killed, the view
+  stays in his eyes and tumbles with the ragdoll's head (eased in), then eases back to mouse look when he gets up.
 - **First person in vehicles**: the view from the seat in the vehicle's space (a bike's lean too), mouse look eased back
   ahead while driving, L2 / R2 still look aside, no camera shake, the body's jolts eased out - and the vehicle's own
   windows not drawn from inside (its glass meshes get alpha 0 at their draw; nothing in the game's memory is changed).
@@ -89,7 +91,9 @@ the SA mod used):
   active ragdoll driven toward its animation -, clutches the wound, stumbles a few steps on a hard hit, and a hit that
   knocks it down drops it as a ragdoll that **catches its fall** with its hands and, armed, **fires back blind** from the
   ground, then gets up.
-- **Dismemberment**: a lethal shot, blade or blast can take a limb or the head off (the stump bleeds).
+- **Dismemberment**: a lethal shot, blade or blast can take a limb or the head off (the stump bleeds); a head shot off
+  comes off whole and rolls away on the ground (drawn by a second draw of the ped with only the head, so no skin stretches
+  between it and the neck).
 - **Pickups on the ground** (after SA's "GTA IV Pickups On The Ground"): weapons and cash lie at their real size where
   they fall (Jolt props), no spinning or glow.
 - **Foot IK**: Vic's and nearby peds' feet stand on slopes and stairs; **jiggle physics**: chest and hip springs.
@@ -97,12 +101,14 @@ the SA mod used):
 Settings (F2, Game page, "Physics"; keys in `vcs.ini`): `physics.ragdolls` Ragdolls (off; `VCS_JOLT=0/1`),
 `physics.ragdoll_force` Hit force (100 %), `physics.ragdoll_bikes` Bike falls, `physics.ragdoll_hits` Hit reactions,
 `physics.ragdoll_catch` Catch falls, `physics.ragdoll_blindfire` Fire back from the ground (these four on, with
-Ragdolls), `physics.gore` Dismemberment (off), `physics.pickups` Pickups on the ground (off), `physics.footik` /
+Ragdolls), `physics.gore` Dismemberment (off), `physics.gore_keep_heads` Keep severed heads (on), `physics.pickups` Pickups on the ground (off), `physics.footik` /
 `physics.footik_npcs` Foot IK, `physics.jiggle` / `physics.jiggle_intensity` Jiggle physics. For tests:
-`VCS_JOLT_HOOKS=0` hooks nothing, `VCS_JOLT_WORLD=0` leaves the world out; control commands `jolt`, `footik`, `jiggle`
+`VCS_JOLT_HOOKS=0` hooks nothing, `VCS_JOLT_WORLD=0` leaves the world out, `VCS_JOLT_HEADSHOTS=1` makes every killing
+hit take the head (with Dismemberment); control commands `jolt`, `footik`, `jiggle`
 (status; the port's `tools/ragdoll_check.py`, `ragdoll_world_check.py`, `hit_reactions_check.py`, `footik_check.py` ...).
 How it works: the port's docs/game-internals.md 12f - 12s. Install `JoltPhysics.asi` with `CameraAim.asi` if you use
-first person / free aim (it loads after it and chains its hooks to theirs).
+first person / free aim (it loads after it and chains its hooks to theirs); its export `JoltPhysicsPlayerRagdoll` tells
+CameraAim's first person when Vic's body is a ragdoll.
 
 ### RenderHook.asi - RenderHook-style graphics (ambient occlusion, sun shadows, DLAA)
 

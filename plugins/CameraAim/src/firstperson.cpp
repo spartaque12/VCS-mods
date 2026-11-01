@@ -15,6 +15,9 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 namespace vcs::firstperson
 {
@@ -131,6 +134,13 @@ namespace vcs::firstperson
         uint32_t g_lastEyeFrame = 0, g_eyeHeld = 0;
         float g_eyeHead[3] = {kEyeForward, 0.0f, kEyeUp}; // the eyes from the head joint along its axes (world)
         uint32_t g_eyeFrame = 0;
+        // the head joint and its axes (x up the head, y the face's forward) from the last draw: a ragdoll's view
+        float g_headJoint[3] = {}, g_headUp[3] = {0.0f, 0.0f, 1.0f}, g_headAhead[3] = {1.0f, 0.0f, 0.0f};
+        // Vic's body a ragdoll (JoltPhysics.asi: knocked down, thrown off a bike, dead): first person looks out of its
+        // head, eased in and out (0 the mouse's view .. 1 the head's)
+        constexpr float kRagdollIn = 0.2f, kRagdollOut = 0.5f; // seconds
+        float g_ragdollBlend = 0.0f;
+        float g_ragdollDir[3] = {1.0f, 0.0f, 0.0f}, g_ragdollUp[3] = {0.0f, 0.0f, 1.0f};
         bool g_nearSaved = false; // the game's near plane, given back when first person ends
         uint32_t g_nearCamera = 0;
         float g_nearGame = 0.3f;
@@ -548,6 +558,60 @@ namespace vcs::firstperson
         // One update of the active camera: in a vehicle (first person), on foot - first person's view, free aim's
         // camera over the shoulder (eased in from the game's and back out) - or the game's. False: the game's camera
         // (its height routines run).
+        // JoltPhysics.asi's JoltPhysicsPlayerRagdoll (looked up until found: the mods load in name order)
+        bool playerRagdoll()
+        {
+#if defined(_WIN32)
+            using RagdollFn = int (*)(void);
+            static RagdollFn fn = nullptr;
+            static unsigned tries = 0;
+            if (!fn && tries < 600)
+            {
+                ++tries;
+                if (HMODULE m = GetModuleHandleW(L"JoltPhysics.asi"))
+                    fn = reinterpret_cast<RagdollFn>(GetProcAddress(m, "JoltPhysicsPlayerRagdoll"));
+            }
+            return fn && fn() != 0;
+#else
+            return false;
+#endif
+        }
+
+        // A ragdoll's first person: the eyes on its head's axes and the view along its face, rolling with it - eased in
+        // when the body goes limp and back out to the mouse's view (from where the head ended up) when he is up again.
+        void ragdollView(const uint8_t *ram, bool ragdoll, uint32_t frame, float *src, float *dir)
+        {
+            const float step = std::clamp(rdf(ram, kTimeStep), 0.0f, 3.0f) / 50.0f;
+            const bool fresh = g_eyeValid && frame - g_eyeFrame <= 4u;
+            const float was = g_ragdollBlend;
+            g_ragdollBlend = ragdoll && fresh ? std::min(1.0f, g_ragdollBlend + step / kRagdollIn)
+                                              : std::max(0.0f, g_ragdollBlend - step / kRagdollOut);
+            if (ragdoll && fresh)
+            {
+                std::copy(g_headAhead, g_headAhead + 3, g_ragdollDir);
+                std::copy(g_headUp, g_headUp + 3, g_ragdollUp);
+            }
+            if (g_ragdollBlend <= 0.0f)
+                return;
+            if (was > 0.0f && g_ragdollBlend < was && !ragdoll)
+            {
+                // easing out: the mouse's view starts level, the way the face last looked
+                g_yaw = std::atan2(g_ragdollDir[1], g_ragdollDir[0]);
+                g_pitch = 0.0f;
+            }
+            float l = 0.0f;
+            for (int i = 0; i < 3; ++i)
+            {
+                if (fresh)
+                    src[i] += (g_headJoint[i] + g_eyeHead[i] - src[i]) * g_ragdollBlend;
+                dir[i] += (g_ragdollDir[i] - dir[i]) * g_ragdollBlend;
+                l += dir[i] * dir[i];
+            }
+            l = std::sqrt(l);
+            for (int i = 0; i < 3; ++i)
+                dir[i] = l > 1e-4f ? dir[i] / l : g_ragdollDir[i];
+        }
+
         bool update(uint8_t *ram, uint32_t cam)
         {
             const uint32_t ped = rd32(ram, kPlayerPed);
@@ -587,7 +651,9 @@ namespace vcs::firstperson
             }
             // first person on foot - and while getting in or out of a vehicle: the ped has it (+0x480) from the start of
             // the enter anim to the end of the exit anim, the game's follow camera (mode 4) still on (game-internals.md 12t)
-            const bool first = g_enabled && ped && rd32(ram, kLooksAtPlayer) == 1 && (mode == kModeFollowPed || mode == kModeLockOn);
+            const bool ragdoll = g_enabled && ped && rd32(ram, ped + kPedVehicle) == 0 && playerRagdoll();
+            const bool first = g_enabled && ped && rd32(ram, kLooksAtPlayer) == 1 &&
+                               (mode == kModeFollowPed || mode == kModeLockOn || ragdoll);
             // free aim (freeaim.h): R1 with a gun, the game's follow camera behind the player
             const bool aiming = onFoot && mode == kModeFollowPed && freeaim::wantsAim(ram, ped);
             const float step = std::clamp(rdf(ram, kTimeStep), 0.0f, 3.0f) / (50.0f * kAimBlendSeconds);
@@ -625,12 +691,13 @@ namespace vcs::firstperson
                 g_yaw = std::atan2(rdf(ram, ped + kPedForward + 4), rdf(ram, ped + kPedForward));
                 g_pitch = std::clamp(std::asin(std::clamp(gf[2], -1.0f, 1.0f)), kPitchDown, kPitchUp);
             }
-            else if (first || aiming) // (the aim camera easing out stays where it was)
+            else if ((first || aiming) && !ragdoll && g_ragdollBlend <= 0.0f) // (the aim camera easing out stays where it was)
             {
                 g_yaw = wrap(g_yaw + dYaw);
                 g_pitch = std::clamp(g_pitch + dPitch, kPitchDown, kPitchUp);
             }
-            const bool turning = mode == kModeFollowPed && (first || aiming); // the mouse turns our view
+            // the mouse turns our view (not a ragdoll's: the body is the physics', the view its head's)
+            const bool turning = mode == kModeFollowPed && (first || aiming) && !ragdoll && g_ragdollBlend <= 0.0f;
             g_looking = turning;
             g_hideHead = first;
 
@@ -737,6 +804,7 @@ namespace vcs::firstperson
                 }
                 std::copy(front, front + 3, dir);
                 fov = static_cast<float>(g_fov.load(std::memory_order_relaxed));
+                ragdollView(ram, ragdoll, frame, src, dir);
             }
             else
             {
@@ -770,6 +838,20 @@ namespace vcs::firstperson
             // no roll: up from the view's own pitch
             const float h = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1]);
             float up[3] = {h > 1e-4f ? -dir[0] / h * dir[2] : 0.0f, h > 1e-4f ? -dir[1] / h * dir[2] : 0.0f, h};
+            if (first && g_ragdollBlend > 0.0f) // a ragdoll's view rolls with its head
+            {
+                float l = 0.0f;
+                for (int i = 0; i < 3; ++i)
+                {
+                    up[i] += (g_ragdollUp[i] - up[i]) * g_ragdollBlend;
+                    l += up[i] * up[i];
+                }
+                l = std::sqrt(l);
+                for (float &v : up)
+                    v = l > 1e-4f ? v / l : 0.0f;
+                if (l <= 1e-4f)
+                    up[2] = 1.0f;
+            }
             if (head && headRoll != 0.0f) // the head's roll (VR): up tilted toward the view's right
             {
                 const float right[3] = {sy, -cy, 0.0f}, cr = std::cos(headRoll), sr = std::sin(headRoll);
@@ -913,6 +995,12 @@ namespace vcs::firstperson
                     // and ducks, and world up / the view's ahead from the joint put them in his chest
                     for (int i = 0; i < 3; ++i)
                         g_eyeHead[i] = rdf(rdram, head + 4u * i) * kEyeUp + rdf(rdram, head + 0x10u + 4u * i) * kEyeForward;
+                    g_headJoint[0] = hx, g_headJoint[1] = hy, g_headJoint[2] = hz;
+                    for (int i = 0; i < 3; ++i)
+                    {
+                        g_headUp[i] = rdf(rdram, head + 4u * i);
+                        g_headAhead[i] = rdf(rdram, head + 0x10u + 4u * i);
+                    }
                     g_eyeFrame = rd32(rdram, kFrameCounter);
                     g_eyeValid = true;
                     // in a vehicle: the head joint in its space (its matrix rows are orthonormal)
