@@ -126,6 +126,10 @@ namespace vcs::jolt
         constexpr uint32_t kPedGetUpTime = 0x6C4u; // CPed::m_getUpTimer (ms)
         constexpr uint32_t kPedHeading = 0x8E0u;   // m_fRotationCur, then m_fRotationDest (radians; 0 faces +y)
         constexpr uint32_t kKnockMs = 1000;        // a rider knocked off is ragdolled at a draw within this
+        // CPed::RemoveBodyPart (FUN_001d8c20; InflictDamage's head shot - every one of the player's with PedSkills.asi):
+        // the head pop sets +0x1C8 bit 22 and the part (2, the head) in the byte at +0x786; CPed::Render then scales the
+        // head's bones to nothing every frame after building them (0x200B9C)
+        constexpr uint32_t kPedBodyFlags = 0x1C8u, kPartOff = 0x400000u, kPedPartOff = 0x786u;
         constexpr float kThrowUp = 4.5f;           // a rider thrown off rises at most this fast (m/s; throwOff) ...
         constexpr float kThrowMax = 20.0f;         // ... and goes on at most this fast
         constexpr float kRammerReach = 4.5f, kRammerSpeed = 3.0f; // a vehicle this near and fast rammed it (rammedBy)
@@ -1037,6 +1041,11 @@ namespace vcs::jolt
                 if (goreOn(ram))
                 {
                     const uint32_t ms = rd32(ram, kTimeMs);
+                    // the game's own head pop: the head comes off here instead (whole, with Keep severed heads - the
+                    // game's shrinking of it let go, it is this mod's to draw)
+                    const bool popped = (rd32(ram, ped + kPedBodyFlags) & kPartOff) && ram[(ped + kPedPartOff) & kRamMask] == 2;
+                    if (popped && sever(doll, ped, physics::kHead, ms, "the game's head pop") && doll.stumpKept[doll.stumps - 1])
+                        wr32(ram, ped + kPedBodyFlags, rd32(ram, ped + kPedBodyFlags) & ~kPartOff);
                     if (fresh && hit.weapon >= 0)
                         severByHit(doll, ped, hit.weapon, hit.piece, ms);
                     for (const Blast &b : g_blasts)
