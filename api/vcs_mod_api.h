@@ -490,6 +490,15 @@ typedef struct VcsModApi
     /* The picture's output size (the scene / HUD layers; with "Match window" the render targets too) in place of the
      * window's: the headset's resolution x a render scale. 0 x 0 = the window's again. Any thread. */
     void (*render_set_output_size)(uint32_t width, uint32_t height);
+
+    /* -- vegetation wind (appended 2026-11-02, API 1; check with VCS_MOD_API_HAS(api, render_set_wind_list)) ---------- */
+    /* Native world draws whose texture a wind list names sway (gs_draw.hlsl vs_world): x, y the noise field's position
+     * (metres; drift it for motion), strength in metres (0 = still, the default). Any thread, every frame. */
+    void (*render_set_wind)(float x, float y, float strength);
+    /* The wind list: lines "<PCSX2 texture name> mx my mz 0 reach" (metres per position unit, the reach in position
+     * units; the port's tools/veg_convert.py writes them). VcsModRegister only - the renderer reads it when it starts;
+     * 0 if too late or unreadable. */
+    int (*render_set_wind_list)(const char *path);
 } VcsModApi;
 
 /* Whether this exe's table has `field` (functions appended after a mod was built are NULL-checked this way). */

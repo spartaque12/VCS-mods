@@ -202,6 +202,28 @@ Game page, "Ped skills"): `pedskills.headshots` (on; `VCS_HEADSHOTS`) and `pedsk
 nothing, `VCS_PEDSKILLS_LOG=1` logs the player's hits and every head shot made, the control command `pedskills` reports
 counts and the last hit. How the game decides: the port's docs/game-internals.md 12v.
 
+### Vegetation.asi - BSOR palms and trees, swaying in the wind
+
+VCS's palms and leaf trees replaced by **BSOR Vegetation** (GTA SA) and their leaves swaying in the game's wind, as
+SkyGfx Extended's vegetation wind does in San Andreas:
+- **The models** are data, made from your own copy of the pack by the port's converter (game data: never committed):
+  `python tools/veg_convert.py --pack "<...>\modloader\BSOR_Vegetation" --straight --hd`. It writes them into the game's
+  own formats under `mods\stream` beside `vcs.exe` (the port's streamed-file override), each scaled to the game model's
+  height and stood on its trunk's foot, upright (`--straight`: SA's leaning palms built from upright ones), with the
+  game's own prelighting matched so they darken at night as the originals do; `--hd` adds the pack's full-size
+  textures as a texture pack (F2 > Graphics > Texture replacements) and writes `mods\wind.txt`, the leaf textures that
+  sway. 80's VC True Vegetation (`--pack "<...>\80's vc True vegetation.zip"`) works too.
+- **The wind**: only the leaves move - by their distance from the top of the trunk, so the bark stays still and the
+  crown on it - with a value-noise field drifting with the game's wind (CWeather::Wind: calm, cloudy, rain, hurricane
+  stronger) on the game's clock (still while paused). The mod hands `mods\wind.txt` to the renderer and moves the field
+  every frame; the sway itself is the port's native world shader. Under 0.1 ms of GPU time; no new draws.
+
+Settings (F2, Graphics page "Image quality"): `graphics.wind_sway` (off; `VCS_WIND`) and `graphics.wind_strength`
+(100 %, 0 - 300; `VCS_WIND_STRENGTH`). `VCS_WIND_LIST=<file>` / `VCS_MODS_DIR` point it elsewhere. Needs a `vcs.exe`
+whose mod API has `render_set_wind_list` (the fork's `vcs-mods` branch from 2026-11-02 on); an older one refuses it
+with a log line. Without the converted models nothing sways (the game's own palms are never moved). The facts: the
+port's docs/game-internals.md 12j; the choices: docs/DECISIONS.md.
+
 ## Building
 
 Windows, with Visual Studio's clang-cl (the C++ Clang tools) and CMake + Ninja, from a "x64 Native Tools" prompt:
@@ -235,6 +257,7 @@ reports and leaves the crosshair out if they differ.
 | `plugins/Project2DFX/` | Project2DFX.asi: `main.cpp` (the exports), `project2dfx.cpp`, `ps2_float.h` (the EE's float maths, copied from the runtime) |
 | `plugins/RenderHook/` | RenderHook.asi: `main.cpp` (the exports), `renderhook.cpp` (AO settings and passes), `temporal.cpp` (jitter, motion-vector views), `dlaa.cpp` (DLAA through NGX), `shadows.cpp` (sun shadows), `blobs.cpp` (the game's blob shadows), `shaders/` |
 | `plugins/VR/` | VR.asi: `main.cpp` (the exports, settings, the present hook: copies, layers, head look), `xr.cpp` (OpenXR: loader, session, spaces, swapchains, frames), `shaders/vr_blit.hlsl`, `test/` (xr_test_runtime) |
+| `plugins/Vegetation/` | Vegetation.asi: `main.cpp` (settings, the wind list's hand-over, the per-frame wind field on the frame kick) |
 | `third_party/imgui/` | Dear ImGui 1.92.7-docking (MIT), the sources the port builds |
 | `third_party/JoltPhysics/` | Jolt Physics 5.6.0 (MIT): `Jolt/` and `Build/` of the v5.6.0 tag, unmodified |
 | `third_party/openxr/` | The OpenXR headers (KhronosGroup/OpenXR-SDK release-1.1.65, Apache-2.0 OR MIT) |
