@@ -460,8 +460,11 @@ typedef struct VcsModApi
      * screen are not). `drawn` (may be NULL): draws drawn. */
     VcsRenderTexture *(*render_shadow_map)(const float *view_to_clip, uint32_t count, uint32_t size, uint32_t *drawn);
 
-    /* -- reserved (2026-11-01): a slot another mod API addition in progress takes (several lit refiners); NULL here -- */
-    void *reserved_lit_refiners;
+    /* -- several lit refiners (appended 2026-11-01, API 1; check with VCS_MOD_API_HAS(api, add_lit_refiner)) ---------- */
+    /* Another refiner beside the one set_lit_refiner sets (a chain, e.g. WeaponHD.asi): the added ones are asked
+     * first, in the order added; the first to hand back geometry draws the batch, the others are not asked for it.
+     * At most 8; returns 0 when refused. Not removable. */
+    int (*add_lit_refiner)(VcsLitRefineFn fn, void *user);
 
     /* -- VR pacing and render size (appended 2026-11-01, API 1; check with VCS_MOD_API_HAS(api, render_set_output_size)) */
     /* A headset paces the frames: hz > 0 runs the game at that rate (frame-rate independent timing) with the window's
