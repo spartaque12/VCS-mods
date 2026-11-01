@@ -606,12 +606,6 @@ namespace vcs::jolt
             }
         }
 
-        // A rider thrown off a bike, after SA's (its riders tumble off, they are not launched): the game's throw is made
-        // for an animation - the bike's speed and up to 11 m/s up, one block, so the body would sail 5 m high still in
-        // its riding pose. Rammed by a vehicle: swept up by it - the legs at its speed, the trunk and head less, lifted a
-        // little -, so it folds and rolls over the bonnet (the vehicle is in the physics). Else (a crash, a shot, a tyre)
-        // over the handlebars: on along the throw's way, the legs held back by the bike and the trunk and head on, so it
-        // pitches head first; up no more than a few m/s. The arms flail (a random push each).
         // The vehicle (not its own bike) whose hit knocked a rider off, from InflictDamage's note of this frame or
         // the last few: the attacker and its speed then. A ped's own collision with a vehicle (FUN_001db5f8 /
         // FUN_001dc3e8: weapon 47) does not go through InflictDamage: then the fastest vehicle moving faster than
@@ -652,6 +646,12 @@ namespace vcs::jolt
 
         float goreRandom();
 
+        // A rider thrown off a bike, after SA's (its riders tumble off, they are not launched): the game's throw is made
+        // for an animation - the bike's speed and up to 11 m/s up, one block, so the body would sail 5 m high still in
+        // its riding pose. Rammed by a vehicle: swept up by it - the legs at its speed, the trunk and head less, lifted a
+        // little -, so it folds and rolls over the bonnet (the vehicle is in the physics). Else (a crash, a shot, a tyre)
+        // over the handlebars: on along the throw's way, the legs held back by the bike and the trunk and head on, so it
+        // pitches head first; up no more than a few m/s. The arms flail (a random push each).
         void throwOff(int id, const float game[3], const Knock &k, float force)
         {
             using namespace physics;
