@@ -249,6 +249,8 @@ namespace vcs::renderhook
 
     void hookAo() { hookOnce(); }
 
+    bool aoOn() { return g_level.load(std::memory_order_relaxed) > 0 || g_view.load(std::memory_order_relaxed) != 0; }
+
     void registerCommands()
     {
         // VCS_RH_AO_VIEW=1: the debug view (the occlusion as grey over the 3D picture) from the start

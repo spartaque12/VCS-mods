@@ -29,6 +29,13 @@ extern "C"
         return 1;
     }
 
+    // The game's blob shadows (blobs.cpp): one hook on CShadows::StoreShadowToBeRendered.
+    VCS_MOD_EXPORT int VcsModInstall(const VcsModApi *)
+    {
+        vcs::renderhook::installBlobs();
+        return 1;
+    }
+
     // The rows on the Graphics page after the renderer's (slot "graphics").
     VCS_MOD_EXPORT int VcsModRegisterSettings(const VcsModApi *, const char *slot)
     {
@@ -36,6 +43,7 @@ extern "C"
         {
             vcs::renderhook::registerSettings();
             vcs::renderhook::registerShadowSettings();
+            vcs::renderhook::registerBlobSettings();
             vcs::renderhook::registerDlaaSettings();
         }
         return 1;

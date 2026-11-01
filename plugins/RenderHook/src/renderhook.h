@@ -13,6 +13,11 @@ namespace vcs::renderhook
     void registerTemporal();
     // The AO hook added now (dlaa.cpp: before DLAA's own, so DLAA sees the occlusion; it does nothing while AO is off)
     void hookAo();
+    bool aoOn(); // ambient occlusion on (its debug view counts)
+    // blobs.cpp: the game's blob shadows under peds / cars / bikes hidden with AO or sun shadows (VcsModInstall's hook;
+    // the Graphics page's row)
+    void installBlobs();
+    void registerBlobSettings();
     // dlaa.cpp (dlaa_none.cpp without the DLSS SDK): VcsModRegister's command `rhdlaa`, the Graphics page's DLAA rows
     void registerDlaa();
     // shadows.cpp: sun shadows - VcsModRegister's command `rhshadow`, the Graphics page's rows, the hook (added when first

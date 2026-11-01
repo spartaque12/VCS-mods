@@ -144,6 +144,8 @@ older one refuses the mod with a log line.
   Settings (Graphics, "Lighting (RenderHook)"): `renderhook.shadows` Off / Soft / Normal / Dark (`VCS_RH_SHADOWS`),
   `renderhook.shadow_distance` 50-400 m, `renderhook.shadow_quality` 1024 / 2048 / 4096; `VCS_RH_SHADOW_VIEW=1` or the
   control command `rhshadow view 1` shows them alone. Needs a `vcs.exe` with `render_shadow_map` (2026-11-01 on).
+- **Blob shadows**: the game's round shadows under peds, cars and bikes are hidden while AO or sun shadows are on
+  (`renderhook.blob_shadows` Auto / Shown / Hidden, `VCS_RH_BLOB_SHADOWS`; a hook on `CShadows::StoreShadowToBeRendered`).
 - **DLAA** (NVIDIA DLSS at native resolution): the picture after the AO, the game's depth and its motion vectors (the
   camera's and the moving objects') and the renderer's jitter go to DLSS through NGX in the game's process; smooth, stable
   edges. Needs an RTX card, D3D11 (the default backend), and a build with the DLSS SDK: configure with
@@ -219,7 +221,7 @@ reports and leaves the crosshair out if they differ.
 | `plugins/CameraAim/` | CameraAim.asi: `main.cpp` (the exports), `firstperson.cpp`, `freeaim.cpp`, `carglass.cpp` |
 | `plugins/JoltPhysics/` | JoltPhysics.asi: `main.cpp` (the exports), `jolt.cpp` (ragdolls, bike falls, hit reactions, gore, pickups), `footik.cpp`, `jiggle.cpp`, `physics/ragdoll.cpp` (the only code that sees Jolt) |
 | `plugins/Project2DFX/` | Project2DFX.asi: `main.cpp` (the exports), `project2dfx.cpp`, `ps2_float.h` (the EE's float maths, copied from the runtime) |
-| `plugins/RenderHook/` | RenderHook.asi: `main.cpp` (the exports), `renderhook.cpp` (AO settings and passes), `temporal.cpp` (jitter, motion-vector views), `dlaa.cpp` (DLAA through NGX), `shadows.cpp` (sun shadows), `shaders/` |
+| `plugins/RenderHook/` | RenderHook.asi: `main.cpp` (the exports), `renderhook.cpp` (AO settings and passes), `temporal.cpp` (jitter, motion-vector views), `dlaa.cpp` (DLAA through NGX), `shadows.cpp` (sun shadows), `blobs.cpp` (the game's blob shadows), `shaders/` |
 | `plugins/VR/` | VR.asi: `main.cpp` (the exports, settings, the present hook: copies, layers, head look), `xr.cpp` (OpenXR: loader, session, spaces, swapchains, frames), `shaders/vr_blit.hlsl`, `test/` (xr_test_runtime) |
 | `third_party/imgui/` | Dear ImGui 1.92.7-docking (MIT), the sources the port builds |
 | `third_party/JoltPhysics/` | Jolt Physics 5.6.0 (MIT): `Jolt/` and `Build/` of the v5.6.0 tag, unmodified |

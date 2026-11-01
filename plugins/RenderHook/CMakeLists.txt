@@ -5,6 +5,7 @@ vcs_add_mod(RenderHook
     src/renderhook.cpp
     src/temporal.cpp
     src/shadows.cpp
+    src/blobs.cpp
 )
 vcs_mod_shader(RenderHook shaders/gtao.hlsl vs_main vs_5_0 kRhFullScreenVS)
 vcs_mod_shader(RenderHook shaders/gtao.hlsl ps_view_depth ps_5_0 kRhViewDepthPS)
