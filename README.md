@@ -133,18 +133,6 @@ older one refuses the mod with a log line.
   "Anti-aliasing (RenderHook)"): `renderhook.dlaa` Off / On (`VCS_RH_DLAA`), `renderhook.dlaa_preset`; turn the game's
   MSAA off with it. Control command `rhdlaa`.
 
-### MeshSmooth.asi - smoother peds (and, experimental, vehicles)
-
-The idea of Zeneric's "Peds And Vehs Mesh Smoothed" for San Andreas, re-implemented for the port (nothing of it used):
-every lit model batch the port draws natively is refined on the host - PN triangles, each triangle split into 4 (level
-1) or 16 (level 2) - and cached per batch; peds are skinned with interpolated bone weights. Crack-free across the
-batches a model is cut into: edge curves depend only on the edge's positions and on normals shared by every user of a
-position. Settings (F2, Graphics page, "Mesh smoothing (MeshSmooth)"): `meshsmooth.enabled` (on; `VCS_MESHSMOOTH`),
-`meshsmooth.peds` (on), `meshsmooth.vehicles` and `meshsmooth.others` (off: layers the game draws over a car's original
-mesh - plate, dirt - show through), `meshsmooth.level` 1-2, `meshsmooth.strength` 0-150 %; key Insert
-(`controls.meshsmooth_key`). Control command `meshsmooth [on|off|reset]`: batches refined per kind, cache, build time.
-Needs a `vcs.exe` whose mod API has the lit refiner (`set_lit_refiner`); the port's check is `tools/meshsmooth_check.py`.
-
 ### VR.asi - the game in an OpenXR headset (M0: mono, head-tracked first person)
 
 An OpenXR session on the game's D3D11 device, modelled on praydog/REFramework's OpenXR runtime code (MIT). In first
