@@ -126,6 +126,9 @@ namespace vcs::jolt
         constexpr uint32_t kPedGetUpTime = 0x6C4u; // CPed::m_getUpTimer (ms)
         constexpr uint32_t kPedHeading = 0x8E0u;   // m_fRotationCur, then m_fRotationDest (radians; 0 faces +y)
         constexpr uint32_t kKnockMs = 1000;        // a rider knocked off is ragdolled at a draw within this
+        constexpr float kThrowUp = 4.5f;           // a rider thrown off rises at most this fast (m/s; throwOff) ...
+        constexpr float kThrowMax = 20.0f;         // ... and goes on at most this fast
+        constexpr float kRammerReach = 4.5f, kRammerSpeed = 3.0f; // a vehicle this near and fast rammed it (rammedBy)
         constexpr uint32_t kSettleMs = 400;        // its body still this long (asleep, or its hips within 3 cm): it gets up ...
         constexpr uint32_t kMinDownMs = 2500;      // ... down this long at least (as GTA IV's peds lie a moment) ...
         constexpr uint32_t kDownMs = 8000;         // ... or at the latest after this
@@ -276,6 +279,8 @@ namespace vcs::jolt
             int generation = 0;
             uint32_t bike = 0, time = 0; // CTimer ms
             int weapon = -1;
+            uint32_t rammer = 0;         // another vehicle that hit the rider (InflictDamage's attacker), its speed then
+            float rammerSpeed[3] = {};
         };
 
         // A gun or wad of cash lying where the physics dropped it: a pickup's object (its model's frame, no spin or glow).
@@ -601,6 +606,89 @@ namespace vcs::jolt
             }
         }
 
+        // A rider thrown off a bike, after SA's (its riders tumble off, they are not launched): the game's throw is made
+        // for an animation - the bike's speed and up to 11 m/s up, one block, so the body would sail 5 m high still in
+        // its riding pose. Rammed by a vehicle: swept up by it - the legs at its speed, the trunk and head less, lifted a
+        // little -, so it folds and rolls over the bonnet (the vehicle is in the physics). Else (a crash, a shot, a tyre)
+        // over the handlebars: on along the throw's way, the legs held back by the bike and the trunk and head on, so it
+        // pitches head first; up no more than a few m/s. The arms flail (a random push each).
+        // The vehicle (not its own bike) whose hit knocked a rider off, from InflictDamage's note of this frame or
+        // the last few: the attacker and its speed then. A ped's own collision with a vehicle (FUN_001db5f8 /
+        // FUN_001dc3e8: weapon 47) does not go through InflictDamage: then the fastest vehicle moving faster than
+        // kRammerSpeed within kRammerReach of the rider.
+        void rammedBy(const uint8_t *ram, uint32_t rider, Knock &k)
+        {
+            const auto hit = g_hits.find(rider);
+            if (hit != g_hits.end() && hit->second.vehicle && hit->second.attacker != k.bike &&
+                rd32(ram, kFrameCounter) - hit->second.frame <= kHitFrames)
+            {
+                k.rammer = hit->second.attacker;
+                std::copy(hit->second.speed, hit->second.speed + 3, k.rammerSpeed);
+                return;
+            }
+            const uint32_t pool = rd32(ram, kVehiclePool);
+            const uint32_t base = pool ? rd32(ram, pool) : 0, flags = pool ? rd32(ram, pool + 4) : 0,
+                           size = pool ? rd32(ram, pool + 8) : 0;
+            float fastest = kRammerSpeed;
+            for (uint32_t i = 0; i < size; ++i)
+            {
+                const uint32_t v = base + i * kVehicleSize;
+                if (ram[(flags + i) & kRamMask] & 0x80 || v == k.bike)
+                    continue;
+                float d[3], speed[3];
+                for (uint32_t c = 0; c < 3; ++c)
+                {
+                    d[c] = rdf(ram, v + kPedPosition + 4 * c) - rdf(ram, rider + kPedPosition + 4 * c);
+                    speed[c] = rdf(ram, v + kVehicleMoveSpeed + 4 * c) * 50.0f;
+                }
+                if (length(d) < kRammerReach && length(speed) > fastest)
+                {
+                    fastest = length(speed);
+                    k.rammer = v;
+                    std::copy(speed, speed + 3, k.rammerSpeed);
+                }
+            }
+        }
+
+        float goreRandom();
+
+        void throwOff(int id, const float game[3], const Knock &k, float force)
+        {
+            using namespace physics;
+            //                                             hips  chest  head  arms ...................  legs ....................
+            static constexpr float kRammed[kPartTotal] = {0.8f, 0.6f, 0.5f, 0.6f, 0.6f, 0.6f, 0.6f, 1.0f, 1.0f, 1.0f, 1.0f};
+            static constexpr float kRammedLift[kPartTotal] = {0.15f, 0.08f, 0.05f, 0.0f, 0.0f, 0.0f, 0.0f, 0.2f, 0.2f, 0.2f, 0.2f};
+            static constexpr float kPitch[kPartTotal] = {0.85f, 1.0f, 1.05f, 1.0f, 1.0f, 1.0f, 1.0f, 0.65f, 0.55f, 0.65f, 0.55f};
+            static constexpr float kPitchLift[kPartTotal] = {1.0f, 1.1f, 1.1f, 1.0f, 1.0f, 1.0f, 1.0f, 0.7f, 0.6f, 0.7f, 0.6f};
+            const float rammed = std::hypot(k.rammerSpeed[0], k.rammerSpeed[1]);
+            const bool swept = k.rammer && rammed > 3.0f;
+            float along[3], up;
+            if (swept)
+            {
+                along[0] = k.rammerSpeed[0], along[1] = k.rammerSpeed[1], along[2] = 0.0f;
+                up = std::min(rammed * 0.2f, kThrowUp);
+            }
+            else
+            {
+                const float h = std::hypot(game[0], game[1]), keep = h > kThrowMax ? kThrowMax / h : 1.0f;
+                along[0] = game[0] * keep * 0.9f, along[1] = game[1] * keep * 0.9f, along[2] = 0.0f;
+                up = std::clamp(game[2], 0.0f, std::min(1.5f + 0.15f * h, kThrowUp));
+            }
+            const float flail = std::min(1.5f, std::hypot(along[0], along[1]) / 10.0f);
+            for (int p = 0; p < kPartTotal; ++p)
+            {
+                const float share = swept ? kRammed[p] : kPitch[p];
+                const float lift = swept ? kRammedLift[p] * rammed : kPitchLift[p] * up;
+                float dv[3] = {along[0] * share, along[1] * share, std::min(lift, kThrowUp)};
+                if (p >= kUpperArmL && p <= kForearmR)
+                    for (float &v : dv)
+                        v += (goreRandom() - 0.5f) * 2.0f * flail;
+                for (float &v : dv)
+                    v *= force;
+                kick(id, p, dv);
+            }
+        }
+
         // Dismemberment (game-internals.md 12p): a part taken off a body - its bones drawn collapsed onto the joint it
         // hangs from (the stump: the skin weighted to them shrinks into it), its bodies no longer meeting anything, blood
         // from the stump. By weapon (VCS's types; SA's Jolt mod's JoltPhysics.dat SeverChance / HeadBurst columns mapped
@@ -880,8 +968,10 @@ namespace vcs::jolt
                                  (hit.weapon == kBlastDamage || std::any_of(g_blasts.begin(), g_blasts.end(), reaches));
             // knocked off: the speed the game gave it leaving the bike (the bike's, and its throw)
             const float *speed = down ? later : pushed ? own : length(later) > length(death.velocity) ? later : death.velocity;
+            // (off a bike: none - throwOff gives its parts theirs)
+            const bool offBike = down && knock->bike;
             for (int k = 0; k < 3; ++k)
-                desc.velocity[k] = down || (fresh && !hit.vehicle && !blasted) ? speed[k] : 0.0f;
+                desc.velocity[k] = offBike ? 0.0f : down || (fresh && !hit.vehicle && !blasted) ? speed[k] : 0.0f;
             const float force = static_cast<float>(g_force.load(std::memory_order_relaxed)) / 100.0f;
             // the ground: the world's collision around it goes into the physics first; where that has no surface under
             // it (collision not streamed in), a ground of its own under the soles of a ped standing at its position (or
@@ -914,12 +1004,21 @@ namespace vcs::jolt
             if (down)
             {
                 ++g_knockdowns;
+                Knock thrown = *knock;
+                if (offBike)
+                {
+                    if (!thrown.rammer)
+                        rammedBy(ram, ped, thrown);
+                    throwOff(id, later, thrown, force);
+                }
                 std::fprintf(stderr,
                              "[jolt] ped %08X (model %d): %s %08X (weapon %d): ragdoll %d at (%.2f, %.2f, "
-                             "%.2f), (%.2f, %.2f, %.2f) m/s, ground %.2f (%s), vehicle pointer %08X\n",
+                             "%.2f), (%.2f, %.2f, %.2f) m/s (the game's (%.2f, %.2f, %.2f), rammed by %08X at %.1f m/s), "
+                             "ground %.2f (%s), vehicle pointer %08X\n",
                              ped, int(int16_t(rd32(ram, ped + kPedModel) & 0xFFFFu)),
                              knock->bike ? "knocked off bike" : "knocked down by a hit,", knock->bike, knock->weapon, id, px,
-                             py, pz, desc.velocity[0], desc.velocity[1], desc.velocity[2], desc.groundZ,
+                             py, pz, desc.velocity[0], desc.velocity[1], desc.velocity[2], later[0], later[1], later[2],
+                             thrown.rammer, length(thrown.rammerSpeed), desc.groundZ,
                              desc.groundPlane ? "its own" : "the world's", rd32(ram, ped + kPedVehicle));
             }
             else
@@ -2217,10 +2316,13 @@ namespace vcs::jolt
                     knock.bike = mod::gpr32(ctx, kA0);
                     knock.time = rd32(rdram, kTimeMs);
                     knock.weapon = int(mod::gpr32(ctx, kA1));
+                    knock.rammer = 0;
+                    rammedBy(rdram, rider, knock);
                     ++g_knocks;
                     std::fprintf(stderr, "[jolt] ped %08X: thrown off bike %08X (weapon %d, direction %u, back on %u), "
-                                 "state 0x%x\n", rider, knock.bike, knock.weapon, mod::gpr32(ctx, kA2) & 0xFFu,
-                                 mod::gpr32(ctx, kT0), rd32(rdram, rider + kPedState));
+                                 "state 0x%x, rammed by %08X at %.1f m/s\n", rider, knock.bike, knock.weapon,
+                                 mod::gpr32(ctx, kA2) & 0xFFu, mod::gpr32(ctx, kT0), rd32(rdram, rider + kPedState),
+                                 knock.rammer, length(knock.rammerSpeed));
                 }
             }
             return g_origKnockOff(rdram, ctx, runtime);

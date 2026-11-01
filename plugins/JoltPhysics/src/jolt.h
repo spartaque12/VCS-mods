@@ -21,7 +21,9 @@
 // - CWorld::TriggerExplosion (FUN_00192760; position, radius f12, power f13): the ragdolls in reach are thrown part by
 //   part, the nearest parts fastest; peds the blast kills get the same throw when their ragdoll is made.
 // - CBike::KnockOffRider (FUN_003f0a58; bike a0, weapon a1, rider a3): a rider thrown off a bike (Game > Physics > Bike
-//   falls) gets a knockdown ragdoll at its next draw in the game's fall state (0x2D), with the throw's speed; the
+//   falls) gets a knockdown ragdoll at its next draw in the game's fall state (0x2D), thrown after SA's (throwOff: a
+//   rider rammed by a vehicle swept over its bonnet, legs first; a crash over the handlebars; never more than 4.5 m/s
+//   up - the game's own throw sends one rigid block 5 m high); the
 //   game's get-up is held back while the body moves (+0x6C4 at -1), then the ped is put on the body and let up, the
 //   body's last pose eased into the get-up animation (docs/game-internals.md 12l).
 // - Hit reactions (Game > Physics > Hit reactions): a ped hit and not killed (InflictDamage's note) gets, at its next
