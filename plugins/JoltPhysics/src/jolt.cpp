@@ -331,6 +331,7 @@ namespace vcs::jolt
         std::atomic<bool> g_blindFire{true};    // Fire back from the ground (with Ragdolls on)
         std::atomic<bool> g_gore{false};        // Dismemberment (with Ragdolls on)
         std::atomic<bool> g_keepHeads{true};    // ... a head shot off rolls away whole instead of bursting
+        std::atomic<bool> g_headsOff{true};     // Shoot heads off: off - no head comes off, the game's head pop too
         uint32_t g_goreSeed = 12345u;
         std::atomic<int> g_force{100}; // Hit force, percent
         bool g_worldOn = true;         // VCS_JOLT_WORLD=0: no world collision (each ragdoll on a ground of its own)
@@ -762,7 +763,8 @@ namespace vcs::jolt
         {
             int root = -1;
             const uint32_t bones = severedBones(part, root);
-            if (!bones || (d.severed & bones) == bones || d.stumps >= int(std::size(d.stumpBone)))
+            if (!bones || (d.severed & bones) == bones || d.stumps >= int(std::size(d.stumpBone)) ||
+                (part == physics::kHead && !g_headsOff.load(std::memory_order_relaxed)))
                 return false;
             d.severed |= bones;
             d.stumpBone[d.stumps] = root;
@@ -2530,6 +2532,13 @@ namespace vcs::jolt
         {
             if (g_passive) // an older vcs.exe with these built in (jolt.h passive)
                 return g_origAfterBones(rdram, ctx, runtime);
+            // Shoot heads off off: the game's head pop undone before CPed::Render shrinks the head (any ped drawn)
+            if (!g_headsOff.load(std::memory_order_relaxed) && mod::gpr32(ctx, kRa) == kAfterBonesInPedRender)
+            {
+                const uint32_t ped = mod::gpr32(ctx, kA0);
+                if ((rd32(rdram, ped + kPedBodyFlags) & kPartOff) && rdram[(ped + kPedPartOff) & kRamMask] == 2)
+                    wr32(rdram, ped + kPedBodyFlags, rd32(rdram, ped + kPedBodyFlags) & ~kPartOff);
+            }
             if ((!g_pending.empty() || !g_dolls.empty() || !g_knocked.empty() || !g_blends.empty() || !g_hits.empty()) &&
                 mod::gpr32(ctx, kRa) == kAfterBonesInPedRender)
             {
@@ -2787,6 +2796,20 @@ namespace vcs::jolt
         s.defaultValue = 1;
         s.env = "VCS_JOLT_KEEP_HEADS";
         s.onChange = [](int v) { g_keepHeads = v != 0; };
+        add(s);
+
+        s = {};
+        s.key = "physics.heads_off";
+        s.page = "Game";
+        s.section = "Physics";
+        s.label = "Shoot heads off";
+        s.help = "Whether a ped's head can be shot off: the game's own head pop on a critical head shot (every one of "
+                 "yours with Ped skills > Head shots) and, with Dismemberment, its head hits and blasts - the head then "
+                 "rolling away whole with Keep severed heads. Off: heads stay on (the shot still kills).";
+        s.type = Type::Toggle;
+        s.defaultValue = 1;
+        s.env = "VCS_JOLT_HEADS_OFF";
+        s.onChange = [](int v) { g_headsOff = v != 0; };
         add(s);
 
         s = {};

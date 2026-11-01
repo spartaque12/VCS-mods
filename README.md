@@ -101,7 +101,7 @@ the SA mod used):
 Settings (F2, Game page, "Physics"; keys in `vcs.ini`): `physics.ragdolls` Ragdolls (off; `VCS_JOLT=0/1`),
 `physics.ragdoll_force` Hit force (100 %), `physics.ragdoll_bikes` Bike falls, `physics.ragdoll_hits` Hit reactions,
 `physics.ragdoll_catch` Catch falls, `physics.ragdoll_blindfire` Fire back from the ground (these four on, with
-Ragdolls), `physics.gore` Dismemberment (off), `physics.gore_keep_heads` Keep severed heads (on), `physics.pickups` Pickups on the ground (off), `physics.footik` /
+Ragdolls), `physics.gore` Dismemberment (off), `physics.gore_keep_heads` Keep severed heads (on), `physics.heads_off` Shoot heads off (on; off: no head comes off, the game's own head pop included), `physics.pickups` Pickups on the ground (off), `physics.footik` /
 `physics.footik_npcs` Foot IK, `physics.jiggle` / `physics.jiggle_intensity` Jiggle physics. For tests:
 `VCS_JOLT_HOOKS=0` hooks nothing, `VCS_JOLT_WORLD=0` leaves the world out, `VCS_JOLT_HEADSHOTS=1` makes every killing
 hit take the head (with Dismemberment); control commands `jolt`, `footik`, `jiggle`
