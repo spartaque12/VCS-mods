@@ -147,6 +147,13 @@ namespace vcs::firstperson
         std::mutex g_headMutex;
         bool g_headOn = false;
         float g_headYaw = 0.0f, g_headPitch = 0.0f, g_headRoll = 0.0f;
+        float g_headPos[3] = {}; // the head's offset from where it was recentred: right, ahead (the body's), up - metres
+        // VR: what of the player's body is drawn while the head look is on (camera.vr_body): 0 none (nothing between the
+        // eyes and the world, the gun hidden too), 1 the arms and gun (the viewmodel; head, neck, torso, legs hidden),
+        // 2 all but the head and neck (as on a monitor)
+        std::atomic<int> g_vrBody{0};
+        constexpr int kVrNearCm = 5; // VR's near plane at most: a headset's eye is right at the joint
+        constexpr float kVrHeadReach = 0.6f; // m: the head's offset kept within this (leaning, not walking)
         std::atomic<uint32_t> g_headAppliedFrame{0}; // the game frame (CTimer::m_FrameCounter + 1) first person on foot last took the head look
 
         // for the control channel's "firstperson" (another thread)
@@ -259,7 +266,10 @@ namespace vcs::firstperson
                 g_nearCamera = rw;
                 g_nearSaved = true;
             }
-            wrf(ram, rw + kRwCameraNear, static_cast<float>(g_nearCm.load(std::memory_order_relaxed)) / 100.0f);
+            int nearCm = g_nearCm.load(std::memory_order_relaxed);
+            if (headLookApplied()) // VR: the eye is at the joint and the head turns anywhere
+                nearCm = std::min(nearCm, kVrNearCm);
+            wrf(ram, rw + kRwCameraNear, static_cast<float>(nearCm) / 100.0f);
         }
 
         // One camera update in a vehicle with first person on: the eyes over the seat (the head joint of the last draw,
@@ -626,11 +636,12 @@ namespace vcs::firstperson
 
             // the VR mod's head look: the view is the body's yaw (mouse / stick) turned by the head; the head alone pitches
             bool head = false;
-            float headYaw = 0.0f, headPitch = 0.0f, headRoll = 0.0f;
+            float headYaw = 0.0f, headPitch = 0.0f, headRoll = 0.0f, headPos[3] = {};
             {
                 std::lock_guard<std::mutex> lock(g_headMutex);
                 head = g_headOn && first && mode == kModeFollowPed;
                 headYaw = g_headYaw, headPitch = g_headPitch, headRoll = g_headRoll;
+                std::copy(g_headPos, g_headPos + 3, headPos);
             }
             if (head)
             {
@@ -690,9 +701,18 @@ namespace vcs::firstperson
                 // the eyes moved out along the view, ahead of the collar and shoulders that would fill the picture
                 {
                     const float fx = rdf(ram, ped + kPedForward), fy = rdf(ram, ped + kPedForward + 4);
-                    const float away = 1.0f - std::clamp(fx * cy + fy * sy, -1.0f, 1.0f); // 0 ahead .. 2 behind
+                    // (not in VR: the head turns there itself, and the body the eyes would clear is hidden)
+                    const float away = head ? 0.0f : 1.0f - std::clamp(fx * cy + fy * sy, -1.0f, 1.0f); // 0 ahead .. 2 behind
                     src[0] += cy * kEyeAwayAhead * away;
                     src[1] += sy * kEyeAwayAhead * away;
+                }
+                // VR: the head's own movement (leaning, ducking) about where it was recentred, in the body's frame
+                if (head)
+                {
+                    const float by = g_yaw, bc = std::cos(by), bs = std::sin(by);
+                    src[0] += bs * headPos[0] + bc * headPos[1];
+                    src[1] += -bc * headPos[0] + bs * headPos[1];
+                    src[2] += headPos[2];
                 }
                 // a jump of the eyes in one update (the frame a rider gets off a bike: his position and the drawn
                 // skeleton disagree for a frame or two) is held out, three updates at most
@@ -929,7 +949,19 @@ namespace vcs::firstperson
                             entering = true;
                         }
                     }
-                    viewmodel::apply(rdram, ped, bones); // first person: the arms and gun in view (viewmodel.h)
+                    // VR: the body's bones collapsed (scale 0 at their joints) except what camera.vr_body keeps
+                    const bool vr = g_hideHead && headLookApplied();
+                    const int vrBody = g_vrBody.load(std::memory_order_relaxed);
+                    if (!vr || vrBody == 1)
+                        viewmodel::apply(rdram, ped, bones); // first person: the arms and gun in view (viewmodel.h)
+                    if (vr && vrBody != 2)
+                        for (uint32_t b = 0; b < kPedBones; ++b)
+                            if (vrBody == 0 || b < 7u || b > 16u) // 7..16: the clavicles, arms and hands (the gun's)
+                                for (uint32_t row = 0; row < 3; ++row)
+                                    wrVec(rdram, bones + b * 0x40u + row * 0x10u, 0.0f, 0.0f, 0.0f);
+                    if (vr) // the neck as well: the view looks down past it
+                        for (uint32_t row = 0; row < 3; ++row)
+                            wrVec(rdram, bones + kNeckBone * 0x40u + row * 0x10u, 0.0f, 0.0f, 0.0f);
                     if (g_hideHead && entering) // the neck too: the view looks down past it onto the seat
                         for (uint32_t row = 0; row < 3; ++row)
                             wrVec(rdram, bones + kNeckBone * 0x40u + row * 0x10u, 0.0f, 0.0f, 0.0f);
@@ -1018,6 +1050,18 @@ namespace vcs::firstperson
         s.onChange = [](int v) { g_nearCm = v; };
         add(s);
 
+        s = {};
+        s.key = "camera.vr_body";
+        s.page = "Game";
+        s.section = "First person";
+        s.label = "In VR: your body";
+        s.help = "What of the player you see in a VR headset (VR.asi): nothing (no arms, neck or gun in the way when you look "
+                 "around or down), the arms and gun only, or the whole body but the head.";
+        s.type = Type::Choice;
+        s.choices = {{"Hidden", 0}, {"Arms and gun", 1}, {"Body (not the head)", 2}};
+        s.defaultValue = 0;
+        s.onChange = [](int v) { g_vrBody = v; };
+        add(s);
         static const char *const kEyeKeys[3] = {"camera.first_person_eye_right", "camera.first_person_eye_ahead",
                                                 "camera.first_person_eye_up"};
         static const char *const kEyeLabels[3] = {"Eye position: right", "Eye position: ahead", "Eye position: up"};
@@ -1125,10 +1169,20 @@ namespace vcs::firstperson
         g_lookPitch += pitch;
     }
 
+    void setHeadPosition(float right, float ahead, float up)
+    {
+        std::lock_guard<std::mutex> lock(g_headMutex);
+        const float v[3] = {right, ahead, up};
+        for (int i = 0; i < 3; ++i)
+            g_headPos[i] = std::isfinite(v[i]) ? std::clamp(v[i], -kVrHeadReach, kVrHeadReach) : 0.0f;
+    }
+
     void setHeadLook(bool on, float yaw, float pitch, float roll)
     {
         std::lock_guard<std::mutex> lock(g_headMutex);
         g_headOn = on;
+        if (!on)
+            g_headPos[0] = g_headPos[1] = g_headPos[2] = 0.0f;
         g_headYaw = std::isfinite(yaw) ? yaw : 0.0f;
         g_headPitch = std::isfinite(pitch) ? pitch : 0.0f;
         g_headRoll = std::isfinite(roll) ? roll : 0.0f;

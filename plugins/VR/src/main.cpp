@@ -41,6 +41,8 @@ namespace
     std::atomic<int> g_cinemaCm{400};       // the cinema screen: distance, width
     std::atomic<int> g_cinemaWidthCm{500};
     std::atomic<int> g_hudCm{150};          // the HUD panel's distance
+    std::atomic<int> g_renderScale{100};    // % of the headset's resolution for the picture (vr.render_scale)
+    uint32_t g_outW = 0, g_outH = 0;        // the picture's output size VR.asi set (render_set_output_size)
     std::atomic<bool> g_recenter{false};    // the hotkey asked for it
 
     bool g_hooked = false;                  // the present and render hooks are in
@@ -73,6 +75,8 @@ namespace
     using SetHeadLookFn = void (*)(int, float, float, float);
     using HeadLookAppliedFn = int (*)();
     SetHeadLookFn g_setHeadLook = nullptr;
+    using SetHeadPositionFn = void (*)(float, float, float);
+    SetHeadPositionFn g_setHeadPosition = nullptr; // newer CameraAim.asi: the head's position too
     HeadLookAppliedFn g_headApplied = nullptr;
     bool g_headSent = false;
 
@@ -84,6 +88,7 @@ namespace
         {
             g_setHeadLook = reinterpret_cast<SetHeadLookFn>(GetProcAddress(m, "CameraAimSetHeadLook"));
             g_headApplied = reinterpret_cast<HeadLookAppliedFn>(GetProcAddress(m, "CameraAimHeadLookApplied"));
+            g_setHeadPosition = reinterpret_cast<SetHeadPositionFn>(GetProcAddress(m, "CameraAimSetHeadPosition"));
         }
         static bool reported = false;
         if ((!g_setHeadLook || !g_headApplied) && !reported)
@@ -335,6 +340,147 @@ namespace
     }
 
     // ---- per host frame -----------------------------------------------------------------------------------------------
+    // ---- performance: per host frame while VR runs (the `vr perf` command, vr.log every 30 s) ---------------------------
+    struct Perf
+    {
+        uint64_t frames = 0, newFrames = 0, gpuSamples = 0;
+        double hostMs = 0, hostMax = 0, submitMs = 0, waitMs = 0, waitMax = 0, gpuMs = 0;
+    } g_perf;
+    int64_t g_lastHostNs = 0, g_perfStartNs = 0;
+    uint64_t g_lastSerial = 0;
+    // GPU time of VR.asi's own copies: timestamp queries read back a few frames later, never waited for
+    struct GpuQuery
+    {
+        ID3D11Query *disjoint = nullptr, *begin = nullptr, *end = nullptr;
+        bool pending = false;
+    };
+    GpuQuery g_queries[4];
+    uint32_t g_queryNext = 0;
+
+    void gpuTimeBegin(ID3D11DeviceContext *c)
+    {
+        GpuQuery &q = g_queries[g_queryNext % 4u];
+        if (!q.disjoint && g_gpu.device)
+        {
+            D3D11_QUERY_DESC d = {D3D11_QUERY_TIMESTAMP_DISJOINT, 0};
+            g_gpu.device->CreateQuery(&d, &q.disjoint);
+            d.Query = D3D11_QUERY_TIMESTAMP;
+            g_gpu.device->CreateQuery(&d, &q.begin);
+            g_gpu.device->CreateQuery(&d, &q.end);
+        }
+        if (!q.disjoint || !q.begin || !q.end)
+            return;
+        if (q.pending) // the oldest: read it if the GPU is done with it, else drop the sample (never stall)
+        {
+            D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj = {};
+            UINT64 b = 0, e = 0;
+            if (c->GetData(q.disjoint, &dj, sizeof(dj), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+                c->GetData(q.begin, &b, sizeof(b), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+                c->GetData(q.end, &e, sizeof(e), D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK && !dj.Disjoint && dj.Frequency && e >= b)
+            {
+                g_perf.gpuMs += (e - b) * 1000.0 / static_cast<double>(dj.Frequency);
+                ++g_perf.gpuSamples;
+            }
+        }
+        c->Begin(q.disjoint);
+        c->End(q.begin);
+    }
+
+    void gpuTimeEnd(ID3D11DeviceContext *c)
+    {
+        GpuQuery &q = g_queries[g_queryNext % 4u];
+        if (!q.disjoint || !q.begin || !q.end)
+            return;
+        c->End(q.end);
+        c->End(q.disjoint);
+        q.pending = true;
+        ++g_queryNext;
+    }
+
+    std::string perfLine(bool reset)
+    {
+        const double n = std::max<double>(1.0, static_cast<double>(g_perf.frames));
+        const double secs = g_perfStartNs ? (nowNs() - g_perfStartNs) / 1e9 : 0.0;
+        char b[400];
+        std::snprintf(b, sizeof(b),
+                      "host %.1f fps (frame %.2f ms avg, %.2f max), new game frames %.1f /s (%.0f%% of host frames), "
+                      "VR.asi CPU %.2f ms, GPU %.3f ms, waiting for the headset %.2f ms avg (%.2f max), picture %ux%u",
+                      secs > 0 ? g_perf.frames / secs : 0.0, g_perf.hostMs / n, g_perf.hostMax,
+                      secs > 0 ? g_perf.newFrames / secs : 0.0, 100.0 * g_perf.newFrames / n, g_perf.submitMs / n,
+                      g_perf.gpuSamples ? g_perf.gpuMs / g_perf.gpuSamples : 0.0, g_perf.waitMs / n, g_perf.waitMax, g_outW, g_outH);
+        if (reset)
+        {
+            g_perf = {};
+            g_perfStartNs = nowNs();
+        }
+        return b;
+    }
+
+    void releaseQueries()
+    {
+        for (GpuQuery &q : g_queries)
+        {
+            release(q.disjoint);
+            release(q.begin);
+            release(q.end);
+            q.pending = false;
+        }
+    }
+
+    // ---- pacing and render size while the session runs -------------------------------------------------------------
+    float g_pacedHz = 0.0f;
+
+    void updatePacing(const VcsPresentFrame *f)
+    {
+        // the game at the headset's rate, the window's limiter / vsync out of the way (xrWaitFrame paces)
+        static const bool off = [] { const char *e = std::getenv("VCS_VR_NO_PACING"); return e && *e == '1'; }(); // A/B tests
+        if (off)
+            return;
+        const float hz = vr::refreshHz();
+        if (hz > 0.0f && std::fabs(hz - g_pacedHz) > 0.5f && VCS_MOD_API_HAS(mod::api, vr_set_pacing))
+        {
+            mod::api->vr_set_pacing(hz);
+            g_pacedHz = hz;
+            vr::log("pacing: the game runs at the headset's %.0f Hz (the frame rate cap and vertical sync are off while VR "
+                    "runs)\n", hz);
+            g_perf = {};
+            g_perfStartNs = nowNs();
+        }
+        // the picture at the headset's resolution for the angle it covers, x the render scale
+        uint32_t rec = 0;
+        vr::Fov eye;
+        if (!VCS_MOD_API_HAS(mod::api, render_set_output_size) || !g_lens.valid || !vr::eyeView(rec, eye))
+            return;
+        const double gameSpan = (g_lens.width - g_lens.cx) / g_lens.fx + g_lens.cx / g_lens.fx; // tan right + tan left
+        const double eyeSpan = std::tan(eye.right) - std::tan(eye.left);
+        const double ww = std::max(1u, f->window_width), wh = std::max(1u, f->window_height);
+        double w = rec * (gameSpan / std::max(0.1, eyeSpan)) * g_renderScale.load() / 100.0;
+        w = std::clamp(w, 480.0, 4096.0);
+        double h = w * wh / ww;
+        if (h > 4096.0)
+            w *= 4096.0 / h, h = 4096.0;
+        const uint32_t ow = static_cast<uint32_t>(std::lround(w)) & ~1u, oh = static_cast<uint32_t>(std::lround(h)) & ~1u;
+        if (std::abs(static_cast<int>(ow) - static_cast<int>(g_outW)) > static_cast<int>(g_outW / 50u) ||
+            std::abs(static_cast<int>(oh) - static_cast<int>(g_outH)) > static_cast<int>(g_outH / 50u))
+        {
+            mod::api->render_set_output_size(ow, oh);
+            vr::log("render size: %ux%u for the game's %.0f deg of the headset's %.0f deg at %ux per eye, scale %d%% (the "
+                    "window is %ux%u)\n", ow, oh, 2.0 * std::atan(gameSpan / 2.0) * 57.2958, (eye.right - eye.left) * 57.2958,
+                    rec, g_renderScale.load(), f->window_width, f->window_height);
+            g_outW = ow, g_outH = oh;
+        }
+    }
+
+    void unpace()
+    {
+        if (g_pacedHz > 0.0f && VCS_MOD_API_HAS(mod::api, vr_set_pacing))
+            mod::api->vr_set_pacing(0.0f);
+        if (g_outW && VCS_MOD_API_HAS(mod::api, render_set_output_size))
+            mod::api->render_set_output_size(0, 0);
+        g_pacedHz = 0.0f;
+        g_outW = g_outH = 0;
+    }
+
     void setSplit(bool on)
     {
         if (on != g_split && VCS_MOD_API_HAS(mod::api, render_set_split_layers))
@@ -346,6 +492,7 @@ namespace
     {
         sendHeadLook(false);
         setSplit(false);
+        unpace();
         if (vr::started() || vr::pending())
         {
             vr::stop();
@@ -526,6 +673,7 @@ namespace
         {
             sendHeadLook(false);
             setSplit(false);
+            unpace(); // the headset asleep: the game on the monitor at its own settings
             g_lastShown.clear();
             g_mode = vr::started() ? "waiting for the headset" : "off";
             g_status = vr::exited() ? kEnded : vr::started() ? kWaiting : kNoHeadset;
@@ -534,11 +682,26 @@ namespace
             return;
         }
         setSplit(true);
+        updatePacing(f);
+        const int64_t t0 = nowNs();
+        if (g_lastHostNs)
+            g_perf.hostMs += (t0 - g_lastHostNs) / 1e6, g_perf.hostMax = std::max(g_perf.hostMax, (t0 - g_lastHostNs) / 1e6);
+        g_lastHostNs = t0;
+        ++g_perf.frames;
+        if (f->layer_serial != g_lastSerial)
+        {
+            g_lastSerial = f->layer_serial;
+            ++g_perf.newFrames;
+        }
         if (vr::frameBegun())
         {
+            gpuTimeBegin(context);
             submit(f, context);
+            gpuTimeEnd(context);
             context->ClearState(); // the renderer sets everything again for its next pass
         }
+        const int64_t t1 = nowNs();
+        g_perf.submitMs += (t1 - t0) / 1e6;
         if (g_recenter.exchange(false))
             vr::recenter();
         // the next headset frame: wait for it (paces the host frame), begin it, and turn the game's first-person view
@@ -551,13 +714,18 @@ namespace
                 float yaw = 0, pitch = 0, roll = 0;
                 headAngles(head, yaw, pitch, roll);
                 sendHeadLook(true, yaw, pitch, roll);
+                if (g_setHeadPosition) // OpenXR: x right, y up, -z ahead (the recentred space: the body's ahead)
+                    g_setHeadPosition(head.p[0], -head.p[2], head.p[1]);
                 g_poses[g_poseNext++ % 128u] = {nowNs(), head};
             }
             else
                 sendHeadLook(false);
         }
+        const int64_t t2 = nowNs();
+        g_perf.waitMs += (t2 - t1) / 1e6;
+        g_perf.waitMax = std::max(g_perf.waitMax, (t2 - t1) / 1e6);
         // every 30 s: what went to the headset
-        const int64_t now = nowNs();
+        const int64_t now = t2;
         if (!g_summaryNs)
             g_summaryNs = now;
         else if (now - g_summaryNs > 30000000000ll)
@@ -566,6 +734,7 @@ namespace
             vr::log("last 30 s: %llu frames head-tracked, %llu cinema (session %s, %.0f Hz); %s\n",
                     static_cast<unsigned long long>(g_headFrames), static_cast<unsigned long long>(g_cinemaFrames),
                     vr::sessionStateName(), vr::refreshHz(), vr::status().c_str());
+            vr::log("performance: %s\n", perfLine(true).c_str());
             g_headFrames = g_cinemaFrames = 0;
         }
     }
@@ -621,6 +790,17 @@ extern "C"
         a->add_hotkey(&key);
 
         mod::addCommand("vr", [](const std::string &args, mod::Reply reply) {
+            if (args == "perf")
+            {
+                reply("ok " + perfLine(false));
+                return;
+            }
+            if (args == "perf reset")
+            {
+                perfLine(true);
+                reply("ok reset");
+                return;
+            }
             if (args == "recenter")
             {
                 g_recenter = true;
@@ -692,6 +872,21 @@ extern "C"
         view.choices = {cm("Head-tracked", 0), cm("Cinema screen", 1)};
         view.onChange = [](int v) { g_view = v; };
         mod::add(view);
+
+        mod::Spec scale;
+        scale.key = "vr.render_scale";
+        scale.page = "Graphics";
+        scale.section = "VR";
+        scale.label = "VR render scale";
+        scale.help = "The picture's resolution against the headset's own (100%: as sharp as the headset shows it). Lower is "
+                     "faster. The 3D itself follows it with Internal resolution = Match window; otherwise only the HUD and "
+                     "the picture's scaling do.";
+        scale.type = mod::Type::Choice;
+        scale.choices = {cm("50%", 50), cm("60%", 60), cm("70%", 70), cm("80%", 80), cm("90%", 90), cm("100%", 100),
+                         cm("120%", 120), cm("150%", 150)};
+        scale.defaultValue = 100;
+        scale.onChange = [](int v) { g_renderScale = v; };
+        mod::add(scale);
 
         mod::Spec dist;
         dist.key = "vr.cinema_distance";

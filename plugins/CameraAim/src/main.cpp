@@ -47,6 +47,10 @@ extern "C"
     {
         vcs::firstperson::setHeadLook(on != 0, yaw, pitch, roll);
     }
+    VCS_MOD_EXPORT void CameraAimSetHeadPosition(float right, float ahead, float up)
+    {
+        vcs::firstperson::setHeadPosition(right, ahead, up);
+    }
     VCS_MOD_EXPORT int CameraAimHeadLookApplied(void) { return vcs::firstperson::headLookApplied() ? 1 : 0; }
 
     VCS_MOD_EXPORT int VcsModRegister(const VcsModApi *a)

@@ -41,6 +41,8 @@ namespace vcs::firstperson
     // looks along the body's yaw (the mouse / stick) turned by the head's yaw, at the head's pitch (the mouse no longer
     // pitches), rolled by its roll - radians, yaw left +, pitch up +, roll right +.
     void setHeadLook(bool on, float yaw, float pitch, float roll);
+    // The head's offset from where VR recentred (metres: right, ahead in the body's frame, up; kept within 0.6 m).
+    void setHeadPosition(float right, float ahead, float up);
     // The last camera update was first person on foot with the head look (any thread).
     bool headLookApplied();
 }

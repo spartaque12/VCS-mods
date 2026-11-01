@@ -459,6 +459,18 @@ typedef struct VcsModApi
      * not in it; static world meshes seen before and now off screen are drawn too, where they were (peds and vehicles off
      * screen are not). `drawn` (may be NULL): draws drawn. */
     VcsRenderTexture *(*render_shadow_map)(const float *view_to_clip, uint32_t count, uint32_t size, uint32_t *drawn);
+
+    /* -- reserved (2026-11-01): a slot another mod API addition in progress takes (several lit refiners); NULL here -- */
+    void *reserved_lit_refiners;
+
+    /* -- VR pacing and render size (appended 2026-11-01, API 1; check with VCS_MOD_API_HAS(api, render_set_output_size)) */
+    /* A headset paces the frames: hz > 0 runs the game at that rate (frame-rate independent timing) with the window's
+     * own frame limiter and vertical sync out of the way (the present hook's xrWaitFrame paces the loop); 0 gives the
+     * settings back. Main thread. */
+    void (*vr_set_pacing)(float hz);
+    /* The picture's output size (the scene / HUD layers; with "Match window" the render targets too) in place of the
+     * window's: the headset's resolution x a render scale. 0 x 0 = the window's again. Any thread. */
+    void (*render_set_output_size)(uint32_t width, uint32_t height);
 } VcsModApi;
 
 /* Whether this exe's table has `field` (functions appended after a mod was built are NULL-checked this way). */

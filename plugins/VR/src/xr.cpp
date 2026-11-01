@@ -94,7 +94,8 @@ namespace vr
     X(xrWaitFrame)                                                                                                          \
     X(xrBeginFrame)                                                                                                         \
     X(xrEndFrame)                                                                                                           \
-    X(xrResultToString)
+    X(xrResultToString)                                                                                                     \
+    X(xrLocateViews)
 #define VR_XR_DECLARE(name) PFN_##name p_##name = nullptr;
         VR_XR_FUNCTIONS(VR_XR_DECLARE)
 #undef VR_XR_DECLARE
@@ -122,6 +123,9 @@ namespace vr
         bool g_exited = false;           // XR_SESSION_STATE_EXITING: the runtime / user ended VR
         bool g_retryable = false;        // the last start failed for a reason that passes (the runtime restarting)
         int64_t g_period = 0;            // the predicted display period last logged
+        uint32_t g_recWidth = 0, g_recHeight = 0; // the headset's recommended size per eye
+        Fov g_eyeFov;                    // the left eye's field of view (xrLocateViews), for the render scale
+        bool g_eyeFovValid = false;
         uint64_t g_errors = 0;
 
         const char *stateName(XrSessionState s)
@@ -378,6 +382,7 @@ namespace vr
             if (n && XR_SUCCEEDED(p_xrEnumerateViewConfigurationViews(g_instance, g_system, XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO, n,
                                                                           &n, views.data())))
                 for (uint32_t i = 0; i < n; ++i)
+                    g_recWidth = views[0].recommendedImageRectWidth, g_recHeight = views[0].recommendedImageRectHeight,
                     vr::log("view %u (primary stereo): recommended %ux%u, max %ux%u, %u samples\n", i,
                             views[i].recommendedImageRectWidth, views[i].recommendedImageRectHeight, views[i].maxImageRectWidth,
                             views[i].maxImageRectHeight, views[i].recommendedSwapchainSampleCount);
@@ -619,7 +624,7 @@ namespace vr
                 const auto &ev = reinterpret_cast<const XrEventDataSessionStateChanged &>(e);
                 vr::log("session state %s -> %s\n", stateName(g_state), stateName(ev.state));
                 g_state = ev.state;
-                if (ev.state == XR_SESSION_STATE_READY && g_session)
+                if (ev.state == XR_SESSION_STATE_READY && g_session && !g_running) // (once: a late READY is not a second begin)
                 {
                     XrSessionBeginInfo bi = {XR_TYPE_SESSION_BEGIN_INFO};
                     bi.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
@@ -710,6 +715,33 @@ namespace vr
             recenter();
         }
         return g_frameBegun;
+    }
+
+    bool eyeView(uint32_t &recommendedWidth, Fov &fov)
+    {
+        if (!g_session || !g_frame.predictedDisplayTime || !g_recWidth)
+            return false;
+        if (!g_eyeFovValid)
+        {
+            XrViewLocateInfo li = {XR_TYPE_VIEW_LOCATE_INFO};
+            li.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+            li.displayTime = g_frame.predictedDisplayTime;
+            li.space = g_viewSpace;
+            XrViewState vs = {XR_TYPE_VIEW_STATE};
+            XrView views[2] = {{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
+            uint32_t n = 0;
+            if (XR_SUCCEEDED(p_xrLocateViews(g_session, &li, &vs, 2, &n, views)) && n >= 1 &&
+                views[0].fov.angleRight > views[0].fov.angleLeft)
+            {
+                g_eyeFov = {views[0].fov.angleLeft, views[0].fov.angleRight, views[0].fov.angleUp, views[0].fov.angleDown};
+                g_eyeFovValid = true;
+                vr::log("eye field of view: L%.1f R%.1f U%.1f D%.1f deg\n", g_eyeFov.left * 57.2958f, g_eyeFov.right * 57.2958f,
+                        g_eyeFov.up * 57.2958f, g_eyeFov.down * 57.2958f);
+            }
+        }
+        recommendedWidth = g_recWidth;
+        fov = g_eyeFov;
+        return g_eyeFovValid;
     }
 
     bool frameBegun() { return g_frameBegun; }

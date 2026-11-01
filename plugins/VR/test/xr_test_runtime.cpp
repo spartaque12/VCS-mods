@@ -190,6 +190,8 @@ namespace
 
     std::mutex g_mutex;
     std::deque<XrEventDataBuffer> g_events;
+    float g_head[6] = {};  // the head: yaw, pitch, roll (degrees), x, y, z (m) - XRTEST_HEAD / the control file's "head"
+    bool g_headSet = false; // set by the control file: the yaw sweep stops
     Session *g_session = nullptr;
     int64_t g_start = 0, g_nextDisplay = 0;
     int64_t g_periodNs = 11111111; // XRTEST_HZ / the control file's "hz N"
@@ -305,6 +307,13 @@ namespace
                 e.poseInPreviousSpace = identity();
                 pushEvent(&e, sizeof(e));
             }
+            else if (c.rfind("head ", 0) == 0)
+            {
+                float h[6] = {};
+                std::sscanf(c.c_str() + 5, "%f,%f,%f,%f,%f,%f", &h[0], &h[1], &h[2], &h[3], &h[4], &h[5]);
+                std::copy(h, h + 6, g_head);
+                g_headSet = true;
+            }
             else if (c.rfind("hz ", 0) == 0)
             {
                 const double hz = std::atof(c.c_str() + 3);
@@ -322,21 +331,22 @@ namespace
     // the simulated head in LOCAL at time t (ns)
     XrPosef headAt(int64_t t)
     {
-        static float fixed[3] = {0, 0, 0};
         static bool parsed = false;
         if (!parsed)
         {
             parsed = true;
-            if (const char *e = std::getenv("XRTEST_HEAD"))
-                std::sscanf(e, "%f,%f,%f", &fixed[0], &fixed[1], &fixed[2]);
+            if (const char *e = std::getenv("XRTEST_HEAD")) // yaw,pitch,roll[,x,y,z]
+                std::sscanf(e, "%f,%f,%f,%f,%f,%f", &g_head[0], &g_head[1], &g_head[2], &g_head[3], &g_head[4], &g_head[5]);
         }
-        const float sweep = envFloat("XRTEST_YAW_SWEEP", 0.0f);
+        const float *fixed = g_head;
+        const float sweep = g_headSet ? 0.0f : envFloat("XRTEST_YAW_SWEEP", 0.0f);
         const double secs = (t - g_start) / 1e9;
         const float yaw = (fixed[0] + sweep * static_cast<float>(std::sin(secs * 2.0 * kPi / 8.0))) * kPi / 180.0f;
         const float pitch = fixed[1] * kPi / 180.0f, roll = fixed[2] * kPi / 180.0f;
         XrPosef p = identity();
         // yaw about +y, then pitch about the head's x, then roll about its -z (right ear down = roll right +)
         p.orientation = qmul(qmul(axisAngle({0, 1, 0}, yaw), axisAngle({1, 0, 0}, pitch)), axisAngle({0, 0, -1}, roll));
+        p.position = {fixed[3], fixed[4], fixed[5]};
         return p;
     }
 
@@ -434,9 +444,22 @@ namespace
             std::fprintf(f, "\n");
             std::fclose(f);
         }
-        if (g_frames % every != 0 || g_captures >= most)
+        // <dir>\capture.txt (a name): this frame captured under that name, whatever the period
+        std::string tag;
+        if (FILE *t = std::fopen((base + "capture.txt").c_str(), "r"))
+        {
+            char name[64] = {};
+            std::fgets(name, sizeof(name), t);
+            std::fclose(t);
+            std::remove((base + "capture.txt").c_str());
+            tag = name;
+            while (!tag.empty() && (tag.back() == '\n' || tag.back() == '\r' || tag.back() == ' '))
+                tag.pop_back();
+        }
+        if (tag.empty() && (g_frames % every != 0 || g_captures >= most))
             return;
         const int n = g_captures++;
+        const std::string id = tag.empty() ? std::to_string(n) : tag;
         // the layers' images
         struct Layer
         {
@@ -462,7 +485,7 @@ namespace
                 for (size_t k = 0; k < rgb.size() / 3; ++k)
                     for (int c = 0; c < 3; ++c)
                         rgb[k * 3 + c] = layer.px.rgba[k * 4 + c];
-                writePng(base + "layer_" + std::to_string(n) + "_" + std::to_string(i) + ".png", rgb, layer.px.w, layer.px.h);
+                writePng(base + "layer_" + id + "_" + std::to_string(i) + ".png", rgb, layer.px.w, layer.px.h);
             }
             layers.push_back(std::move(layer));
         }
@@ -537,7 +560,7 @@ namespace
                     for (int c = 0; c < 3; ++c)
                         o[c] = static_cast<uint8_t>(std::clamp(col[c], 0.0f, 1.0f) * 255.0f + 0.5f);
                 }
-            writePng(base + "eye_" + std::to_string(n) + (eye ? "_right.png" : "_left.png"), rgb, kSize, kSize);
+            writePng(base + "eye_" + id + (eye ? "_right.png" : "_left.png"), rgb, kSize, kSize);
         }
     }
 
@@ -765,6 +788,28 @@ namespace
             else if (!n.empty()) out.push_back(std::atoll(n.c_str()));
         }
         return out;
+    }
+    XrResult XRAPI_CALL rtLocateViews(XrSession s, const XrViewLocateInfo *li, XrViewState *vs, uint32_t cap, uint32_t *count, XrView *views)
+    {
+        if (!s)
+            return violation(XR_ERROR_HANDLE_INVALID, "xrLocateViews with a null session");
+        *count = 2;
+        if (cap == 0)
+            return XR_SUCCESS;
+        if (cap < 2)
+            return XR_ERROR_SIZE_INSUFFICIENT;
+        if (li->displayTime <= 0)
+            return violation(XR_ERROR_TIME_INVALID, "xrLocateViews at time 0");
+        const XrPosef head = compose(inverse(spaceInLocal(*reinterpret_cast<Space *>(li->space), li->displayTime)), headAt(li->displayTime));
+        for (int i = 0; i < 2; ++i)
+        {
+            views[i].pose = compose(head, {{0, 0, 0, 1}, {i ? 0.032f : -0.032f, 0.0f, 0.0f}});
+            const float r = 50.0f * kPi / 180.0f;
+            views[i].fov = {i ? -r * 0.9f : -r, i ? r : r * 0.9f, r, -r};
+        }
+        vs->viewStateFlags = XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT |
+                             XR_VIEW_STATE_ORIENTATION_TRACKED_BIT | XR_VIEW_STATE_POSITION_TRACKED_BIT;
+        return XR_SUCCESS;
     }
     XrResult XRAPI_CALL rtEnumerateSwapchainFormats(XrSession, uint32_t cap, uint32_t *count, int64_t *formats)
     {
@@ -1004,6 +1049,7 @@ namespace
             E("xrCreateReferenceSpace", rtCreateReferenceSpace),
             E("xrDestroySpace", rtDestroySpace),
             E("xrLocateSpace", rtLocateSpace),
+            E("xrLocateViews", rtLocateViews),
             E("xrEnumerateSwapchainFormats", rtEnumerateSwapchainFormats),
             E("xrCreateSwapchain", rtCreateSwapchain),
             E("xrDestroySwapchain", rtDestroySwapchain),

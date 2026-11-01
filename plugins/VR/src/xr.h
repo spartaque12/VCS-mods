@@ -77,6 +77,8 @@ namespace vr
     // xrWaitFrame (paces the caller to the headset) + xrBeginFrame. False when the session does not run.
     bool waitAndBegin();
     bool frameBegun();
+    // The headset's recommended width per eye and the left eye's field of view (once the session runs).
+    bool eyeView(uint32_t &recommendedWidth, Fov &fov);
     bool shouldRender();
     int64_t predictedDisplayTime();
     // The head (the VIEW space) in the recentred space at the predicted display time.
