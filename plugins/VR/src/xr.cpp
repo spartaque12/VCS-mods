@@ -695,8 +695,10 @@ namespace vr
             lostOrStopped(wr);
             return false;
         }
+        // the display's own period: the shortest seen (SteamVR reports twice it while it reprojects - pacing the game
+        // down to that would keep it reprojecting)
         if (g_frame.predictedDisplayPeriod > 0 &&
-            (g_period == 0 || std::llabs(g_frame.predictedDisplayPeriod - g_period) > g_period / 50))
+            (g_period == 0 || g_frame.predictedDisplayPeriod < g_period - g_period / 50))
         {
             g_period = g_frame.predictedDisplayPeriod;
             vr::log("headset refresh: %.1f Hz (display period %.2f ms)\n", 1e9 / static_cast<double>(g_period), g_period / 1e6);

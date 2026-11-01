@@ -510,7 +510,11 @@ namespace
         if (vr::shouldRender())
         {
             vr::Pose renderPose;
-            const bool headApplied = g_headApplied && g_headApplied() != 0;
+            // first person dropping out for a few frames (a frame between camera modes) keeps the head-tracked view: the
+            // cinema only after about a third of a second without it
+            static int missed = 1000;
+            missed = g_headApplied && g_headApplied() != 0 ? 0 : missed + 1;
+            const bool headApplied = missed <= 30;
             const bool reasons[6] = {g_view.load() == 0, f->scene != nullptr, f->has_3d != 0, headApplied,
                                      poseFor(f->input_ns, renderPose), !menuOpen()};
             bool head = g_lens.valid;

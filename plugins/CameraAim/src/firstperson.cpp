@@ -42,6 +42,7 @@ namespace vcs::firstperson
         constexpr uint32_t kModeSniper = 7, kModeRocket = 8, kModeCamera = 46, kModeBinoculars = 47; // the game's own aims
         // in vehicles: 18 behind cars, bikes, helis and planes, 22 boats, 16 the game's own in-car view (Select)
         constexpr uint32_t kModeCar = 18, kModeBoat = 22, kModeInCar = 16;
+        constexpr uint32_t kCamOrientation = 0x7E8u; // TheCamera's heading the player's pad is read against
         constexpr uint32_t kCamLookDirection = 0x74u; // after the game's update: 0 behind, 1 left, 2 right, 3 ahead (L2 / R2)
         constexpr uint32_t kVehicleType = 0x354u;     // 6 bike, 8 BMX (lean matrix at +0x3C0), ...
         constexpr uint32_t kVehicleLeanMatrix = 0x3C0u, kVehicleMoveSpeed = 0x140u; // speed x 50 = m/s
@@ -164,6 +165,7 @@ namespace vcs::firstperson
         std::atomic<int> g_vrBody{0};
         constexpr int kVrNearCm = 5; // VR's near plane at most: a headset's eye is right at the joint
         constexpr float kVrHeadReach = 0.6f; // m: the head's offset kept within this (leaning, not walking)
+        float g_walkHeadYaw = 0.0f; // the head's yaw in this frame's view: taken out of the heading the player walks by
         std::atomic<uint32_t> g_headAppliedFrame{0}; // the game frame (CTimer::m_FrameCounter + 1) first person on foot last took the head look
 
         // for the control channel's "firstperson" (another thread)
@@ -706,13 +708,14 @@ namespace vcs::firstperson
             float headYaw = 0.0f, headPitch = 0.0f, headRoll = 0.0f, headPos[3] = {};
             {
                 std::lock_guard<std::mutex> lock(g_headMutex);
-                head = g_headOn && first && mode == kModeFollowPed;
+                head = g_headOn && first && (mode == kModeFollowPed || mode == kModeLockOn) && !ragdoll;
                 headYaw = g_headYaw, headPitch = g_headPitch, headRoll = g_headRoll;
                 std::copy(g_headPos, g_headPos + 3, headPos);
             }
             if (head)
             {
                 g_headAppliedFrame.store(rd32(ram, kFrameCounter) + 1u, std::memory_order_relaxed);
+                g_walkHeadYaw = headYaw;
                 g_pitch = 0.0f;
             }
             const float viewYaw = head ? wrap(g_yaw + headYaw) : g_yaw;
@@ -1077,6 +1080,19 @@ namespace vcs::firstperson
                 wrVec(rdram, kTheCamera + 0x10u, f[0], f[1], f[2]);
                 wrVec(rdram, kTheCamera + 0x20u, u[0], u[1], u[2]);
                 wrVec(rdram, kTheCamera + 0x30u, g_fpView[0][0], g_fpView[0][1], g_fpView[0][2]);
+            }
+            // VR: the player walks by the body's heading (mouse / stick), not the head's. CCamera::Process has just set
+            // the heading the pad is read against (+0x7E8, FUN_0037b2c8: atan2 of TheCamera's front x, y) from the
+            // view the head turned
+            if (mod::gpr32(ctx, 31) == kSetFovInCameraProcess && g_on && g_hideHead && !mod::freecamFlying() &&
+                g_headAppliedFrame.load(std::memory_order_relaxed) == rd32(rdram, kFrameCounter) + 1u)
+            {
+                const float fx = rdf(rdram, kTheCamera + 0x10u), fy = rdf(rdram, kTheCamera + 0x14u),
+                            o = rdf(rdram, kTheCamera + kCamOrientation);
+                // which way round the game's atan2 is: the heading against both (it may be turned by pi, looking back)
+                const auto off = [o](float a) { return std::min(std::fabs(wrap(o - a)), std::fabs(wrap(o - a - kPi))); };
+                const bool xy = off(std::atan2(fx, fy)) <= off(std::atan2(fy, fx)); // heading = pi/2 - yaw, else = yaw
+                wrf(rdram, kTheCamera + kCamOrientation, wrap(o + (xy ? g_walkHeadYaw : -g_walkHeadYaw)));
             }
             if (mod::gpr32(ctx, 31) == kSetFovInCameraProcess && !g_on && !mod::freecamFlying())
             {
