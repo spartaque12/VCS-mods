@@ -272,20 +272,47 @@ namespace vcs::viewmodel
         {
             float right, ahead, up, converge, left[3], rightShoulder[3];
         };
-        constexpr SaPlace kSaLong = {0.17f, 0.36f, -0.22f, kConverge, {0.04f, 0.42f, -0.62f}, {0.24f, 0.05f, -0.40f}},
-                          kSaSmgPlace = {0.17f, 0.36f, -0.22f, kConverge, {0.04f, 0.42f, -0.62f}, {0.24f, 0.05f, -0.40f}},
-                          kSaPistolPlace = {0.17f, 0.36f, -0.22f, kConverge, {0.04f, 0.42f, -0.62f}, {0.24f, 0.05f, -0.40f}},
-                          kSaHeavyPlace = {0.30f, 0.40f, -0.24f, kConverge, {0.08f, 0.45f, -0.65f}, {0.30f, 0.08f, -0.40f}};
-        const SaPlace &saPlace(int type)
+        // per kind of gun (the F2 rows: camera.vm_<kind>_right / _ahead / _up / _roll)
+        enum GunClass : int
+        {
+            kClassPistol,
+            kClassSmg,
+            kClassRifle,
+            kClassShotgun,
+            kClassHeavy,
+            kClassCount
+        };
+        constexpr SaPlace kSaPlaces[kClassCount] = {
+            {0.17f, 0.36f, -0.22f, kConverge, {0.04f, 0.42f, -0.62f}, {0.24f, 0.05f, -0.40f}}, // pistols
+            {0.17f, 0.36f, -0.22f, kConverge, {0.04f, 0.42f, -0.62f}, {0.24f, 0.05f, -0.40f}}, // SMGs
+            {0.17f, 0.36f, -0.22f, kConverge, {0.04f, 0.42f, -0.62f}, {0.24f, 0.05f, -0.40f}}, // rifles
+            {0.17f, 0.36f, -0.22f, kConverge, {0.04f, 0.42f, -0.62f}, {0.24f, 0.05f, -0.40f}}, // shotguns
+            {0.30f, 0.40f, -0.24f, kConverge, {0.08f, 0.45f, -0.65f}, {0.30f, 0.08f, -0.40f}}, // heavy
+        };
+        GunClass gunClass(int type)
         {
             if (type == 19 || type == 20)
-                return kSaPistolPlace;
+                return kClassPistol;
             if (type >= 24 && type <= 27)
-                return kSaSmgPlace;
+                return kClassSmg;
+            if (type >= 21 && type <= 23)
+                return kClassShotgun;
             if (type >= 33)
-                return kSaHeavyPlace;
-            return kSaLong;
+                return kClassHeavy;
+            return kClassRifle;
         }
+        // the settings' defaults: kSaPlaces' hand in cm, no roll
+        int placeDefault(int gc, int axis)
+        {
+            if (axis == 3)
+                return 0;
+            const SaPlace &d = kSaPlaces[gc];
+            return static_cast<int>(std::lround((axis == 0 ? d.right : axis == 1 ? d.ahead : d.up) * 100.0f));
+        }
+        // the settings: the right hand's place (cm: right, ahead, up of the eyes) and the gun's roll about its barrel
+        // (degrees, + its top to the right) - the barrel stays parallel to the view whatever they are, so on the dot
+        std::atomic<int> g_classPlace[kClassCount][4] = {
+            {{17}, {36}, {-22}, {0}}, {{17}, {36}, {-22}, {0}}, {{17}, {36}, {-22}, {0}}, {{17}, {36}, {-22}, {0}}, {{30}, {40}, {-24}, {0}}};
         // The bore's direction in the hand's frame (x the hand's barrel axis, y left, z up: the tangents of its turn left
         // and up) - the converted SA models are not drawn with the bore exactly along the hand's x (SA's anims point them):
         // measured on screenshots per gun, so the drawn barrel's line runs into the dot (game-internals.md 12t)
@@ -295,19 +322,20 @@ namespace vcs::viewmodel
         };
         Bore bore(int type)
         {
-            switch (type) // (the vmbore command, hidden runs at FOV 87: the barrel's line through the dot, 2026-11-02)
+            switch (type) // (vmbore, hidden runs at FOV 87: the barrel's line through the dot with the gun straight
+                          // below it and straight right of it, so moved / rolled too; 2026-11-02)
             {
-            case 19: return {-0.070f, 0.075f};  // Colt45
-            case 20: return {-0.025f, -0.074f}; // Python (Desert Eagle)
-            case 21: return {-0.110f, 0.130f};  // Shotgun (chromegun)
-            case 22: return {-0.300f, 0.000f};  // SPAS-12
-            case 23: return {0.000f, 0.160f};   // stubby (sawn-off)
-            case 24: return {-0.067f, 0.155f};  // Tec9
-            case 25: return {-0.110f, 0.030f};  // Uzi
-            case 26: return {0.000f, 0.080f};   // silenced Ingram (VCS's model)
-            case 27: return {-0.060f, 0.035f};  // MP5
-            case 28: return {-0.086f, 0.050f};  // M4
-            case 29: return {-0.064f, 0.042f};  // Ruger (AK-47)
+            case 19: return {-0.068f, 0.144f};  // Colt45
+            case 20: return {-0.008f, -0.160f}; // Python (Desert Eagle)
+            case 21: return {-0.118f, 0.138f};  // Shotgun (chromegun)
+            case 22: return {-0.180f, 0.280f};  // SPAS-12
+            case 23: return {0.013f, 0.189f};   // stubby (sawn-off)
+            case 24: return {-0.060f, 0.061f};  // Tec9
+            case 25: return {0.023f, 0.130f};  // Uzi
+            case 26: return {0.060f, 0.264f};   // silenced Ingram (VCS's model)
+            case 27: return {-0.046f, 0.085f};  // MP5
+            case 28: return {-0.092f, 0.022f};  // M4
+            case 29: return {-0.049f, 0.031f};  // Ruger (AK-47)
             case 33: return {0.000f, 0.650f};   // flamethrower (held by its handle, the nozzle 33 degrees up)
             case 34: return {0.000f, 0.300f};   // M60 (VCS's model, by its carry handle)
             case 35: return {-0.060f, 0.450f};  // minigun (by its top handle)
@@ -481,8 +509,50 @@ namespace vcs::viewmodel
         s.onChange = [](int v) { g_saHolds = v != 0; };
         add(s);
 
+        // per kind of gun: the right hand's place and the gun's roll ("w")
+        static const char *const kClassKeys[kClassCount] = {"pistol", "smg", "rifle", "shotgun", "heavy"};
+        static const char *const kClassNames[kClassCount] = {"Pistols", "SMGs", "Rifles", "Shotguns", "Heavy guns"};
+        static const char *const kAxisKeys[4] = {"right", "ahead", "up", "roll"};
+        static const char *const kAxisLabels[4] = {"right (x)", "ahead (y)", "up (z)", "roll (w)"};
+        static const int kAxisMin[4] = {-10, 10, -60, -90}, kAxisMax[4] = {50, 80, 10, 90};
+        static std::string classKeys[kClassCount][4];
+        for (int c = 0; c < kClassCount; ++c)
+            for (int axis = 0; axis < 4; ++axis)
+            {
+                classKeys[c][axis] = std::string("camera.vm_") + kClassKeys[c] + "_" + kAxisKeys[axis];
+                s = {};
+                s.key = classKeys[c][axis];
+                s.page = "Game";
+                s.section = "First person";
+                s.label = std::string(kClassNames[c]) + ": " + kAxisLabels[axis];
+                s.help = axis == 3 ? "Viewmodel: the gun turned about its barrel (+ its top to the right), degrees. The barrel keeps "
+                                     "pointing at the crosshair's dot."
+                                   : "Viewmodel: where the right hand holds this kind of gun, from the eyes (right, ahead, up), cm. "
+                                     "The barrel stays parallel to the view wherever it is, so its line still runs into the dot.";
+                s.type = Type::Integer;
+                s.min = kAxisMin[axis];
+                s.max = kAxisMax[axis];
+                s.format = axis == 3 ? "%d deg" : "%d cm";
+                s.defaultValue = placeDefault(c, axis);
+                s.onChange = [c, axis](int v) { g_classPlace[c][axis] = v; };
+                add(s);
+            }
+        s = {};
+        s.key = "camera.vm_reset";
+        s.page = "Game";
+        s.section = "First person";
+        s.label = "Reset the gun positions";
+        s.help = "Viewmodel: every kind of gun's position and roll back to the San Andreas style defaults.";
+        s.type = Type::Action;
+        s.onChange = [](int) {
+            for (int c = 0; c < kClassCount; ++c)
+                for (int axis = 0; axis < 4; ++axis)
+                    set(classKeys[c][axis], placeDefault(c, axis));
+        };
+        add(s);
+
         static const char *const kKeys[3] = {"camera.viewmodel_right", "camera.viewmodel_ahead", "camera.viewmodel_up"};
-        static const char *const kLabels[3] = {"Gun position: right", "Gun position: ahead", "Gun position: up"};
+        static const char *const kLabels[3] = {"All guns: right", "All guns: ahead", "All guns: up"};
         for (int axis = 0; axis < 3; ++axis)
         {
             s = {};
@@ -490,7 +560,7 @@ namespace vcs::viewmodel
             s.page = "Game";
             s.section = "First person";
             s.label = kLabels[axis];
-            s.help = "UltimateFP viewmodel: moves the arms and gun in view from where they are held by default (0).";
+            s.help = "Viewmodel: moves every gun from its own position (the rows above), added to it.";
             s.type = Type::Integer;
             s.min = -20;
             s.max = 20;
@@ -809,10 +879,13 @@ namespace vcs::viewmodel
         float converge = kConverge;
         float leftShoulder[3] = {-kShoulder[0], kShoulder[1], kShoulder[2]};
         float rightShoulder[3] = {kShoulder[0], kShoulder[1], kShoulder[2]};
+        const GunClass gc = gunClass(g_type);
+        p = {g_classPlace[gc][0].load(std::memory_order_relaxed) / 100.0f, g_classPlace[gc][1].load(std::memory_order_relaxed) / 100.0f,
+             g_classPlace[gc][2].load(std::memory_order_relaxed) / 100.0f, p.recoil};
+        const float roll = static_cast<float>(g_classPlace[gc][3].load(std::memory_order_relaxed)) * kPi / 180.0f;
         if (g_saHolds.load(std::memory_order_relaxed)) // (the flamethrower / minigun too: the by-eye left hand below)
         {
-            const SaPlace &s = saPlace(g_type);
-            p = {s.right, s.ahead, s.up, p.recoil};
+            const SaPlace &s = kSaPlaces[gc];
             converge = s.converge;
             std::copy(s.left, s.left + 3, leftShoulder);
             std::copy(s.rightShoulder, s.rightShoulder + 3, rightShoulder);
@@ -846,6 +919,14 @@ namespace vcs::viewmodel
         for (int i = 0; i < 3; ++i)
             z0[i] -= x0[i] * zx;
         normalise(z0);
+        // the setting's roll: the gun's up turned about its barrel toward the right (right = barrel x up)
+        if (roll != 0.0f)
+        {
+            const float rgt[3] = {x0[1] * z0[2] - x0[2] * z0[1], x0[2] * z0[0] - x0[0] * z0[2], x0[0] * z0[1] - x0[1] * z0[0]};
+            const float c = std::cos(roll), sn = std::sin(roll);
+            for (int i = 0; i < 3; ++i)
+                z0[i] = z0[i] * c + rgt[i] * sn;
+        }
         // at rest: lowered and turned down / in (smoothstep of the aim's share)
         {
             // (as in third person the raised pose itself, eased in from the body's hold by the weight below)
