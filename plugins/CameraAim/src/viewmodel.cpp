@@ -205,6 +205,79 @@ namespace vcs::viewmodel
             return true;
         }
 
+        // San Andreas' own two-handed holds (game-internals.md 12w): from the Immersive Weapons Pack's fire anims at the
+        // fire point by forward kinematics (bone offsets from its RIFLE_fire, which carries them) - the left hand's place
+        // (m) and rotation (x y z w) in the right hand's frame (VC's / SA's bone 15 / 24: x the barrel, z the gun's up),
+        // and both finger bones' local rotations (SA's 35 / 25 -> VCS's 11 / 16). The IWP models keep SA's attachment
+        // to the hand, so these put the left hand on the handguard (not the magazine, as the old by-eye points below did).
+        struct SaHold
+        {
+            float pos[3], q[4], leftFingers[4], rightFingers[4];
+        };
+        constexpr SaHold kSaRifle = {{0.2999f, 0.0339f, 0.0596f}, {-0.9143f, 0.2159f, 0.0974f, -0.3286f},
+                                     {-0.4454f, -0.2676f, 0.3699f, 0.7702f}, {0.2703f, 0.0850f, 0.3260f, 0.9019f}}; // RIFLE_fire
+        constexpr SaHold kSaShotgun = {{0.3338f, 0.0188f, 0.0116f}, {-0.8955f, 0.2420f, 0.0339f, -0.3721f},
+                                       {-0.5003f, -0.3189f, 0.2964f, 0.7484f}, {0.5348f, 0.2774f, 0.4527f, 0.6574f}}; // newshot_fire
+        constexpr SaHold kSaStubby = {{0.3026f, 0.0445f, 0.0310f}, {-0.8164f, 0.4050f, -0.0888f, -0.4021f},
+                                      {-0.5365f, -0.3636f, 0.1458f, 0.7475f}, {0.3702f, 0.2679f, 0.5787f, 0.6755f}}; // buddy_fire
+        constexpr SaHold kSaSmg = {{0.2357f, 0.0510f, 0.0610f}, {-0.8747f, 0.3133f, 0.1142f, -0.3517f},
+                                   {-0.4264f, -0.2315f, 0.2662f, 0.8329f}, {0.1136f, -0.0608f, 0.2847f, 0.9499f}}; // UZI_fire
+        constexpr SaHold kSaTec = {{0.0333f, 0.0838f, -0.0046f}, {0.9891f, -0.0697f, 0.1261f, 0.0300f},
+                                   {-0.1235f, -0.1394f, 0.2691f, 0.9449f}, {0.1856f, -0.0925f, 0.1323f, 0.9693f}}; // tecani_fire_2hands
+        constexpr SaHold kSaColt = {{0.0203f, 0.1127f, -0.0180f}, {-0.9609f, 0.2130f, -0.0281f, -0.1746f},
+                                    {-0.0884f, -0.1880f, 0.3201f, 0.9243f}, {0.1685f, 0.0422f, 0.3751f, 0.9106f}}; // colt45_fire_2hands
+        constexpr SaHold kSaPython = {{0.0243f, 0.0571f, 0.0339f}, {0.9176f, -0.0669f, -0.0378f, 0.3899f},
+                                      {-0.1560f, -0.0904f, -0.2535f, -0.9504f}, {0.1138f, -0.2854f, 0.1333f, 0.9422f}}; // python_fire
+        const SaHold *saHold(int type)
+        {
+            switch (type)
+            {
+            case 19: return &kSaColt;
+            case 20: return &kSaPython;
+            case 21: case 22: return &kSaShotgun;
+            case 23: return &kSaStubby;
+            case 24: return &kSaTec;
+            case 25: case 26: case 27: return &kSaSmg;
+            case 28: case 29: case 34: return &kSaRifle;
+            default: return nullptr; // the flamethrower, the minigun: the by-eye points below
+            }
+        }
+        // a unit quaternion's matrix, m[row][col] (column i = the rotated axis i)
+        void quatMatrix(const float q[4], float m[3][3])
+        {
+            const float x = q[0], y = q[1], z = q[2], w = q[3];
+            m[0][0] = 1 - 2 * (y * y + z * z), m[0][1] = 2 * (x * y - z * w), m[0][2] = 2 * (x * z + y * w);
+            m[1][0] = 2 * (x * y + z * w), m[1][1] = 1 - 2 * (x * x + z * z), m[1][2] = 2 * (y * z - x * w);
+            m[2][0] = 2 * (x * z - y * w), m[2][1] = 2 * (y * z + x * w), m[2][2] = 1 - 2 * (x * x + y * y);
+        }
+        // axes (rows, world) of a child turned by local rotation q from `parent`'s axes
+        void turnedAxes(const float parent[3][3], const float q[4], float out[3][3])
+        {
+            float m[3][3];
+            quatMatrix(q, m);
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j)
+                    out[i][j] = m[0][i] * parent[0][j] + m[1][i] * parent[1][j] + m[2][i] * parent[2][j];
+        }
+        struct SaPlace
+        {
+            float right, ahead, up, converge;
+        };
+        constexpr SaPlace kSaLong = {0.20f, 0.20f, -0.24f, 2.0f}, kSaSmgPlace = {0.18f, 0.26f, -0.22f, 2.0f},
+                          kSaPistolPlace = {0.14f, 0.36f, -0.18f, 4.0f};
+        constexpr float kSaLeftShoulder[3] = {0.02f, 0.0f, -0.45f}; // right of the middle (mirrored), ahead, up
+        const SaPlace &saPlace(int type)
+        {
+            if (type == 19 || type == 20)
+                return kSaPistolPlace;
+            if (type >= 24 && type <= 27)
+                return kSaSmgPlace;
+            return kSaLong;
+        }
+        std::atomic<bool> g_saHolds{true}; // camera.fp_sa_hands
+        std::atomic<bool> g_placeTune{false};
+        std::atomic<float> g_tune[7] = {{0.0f}, {0.0f}, {0.0f}, {30.0f}, {0.19f}, {0.08f}, {-0.30f}}; // + converge, left shoulder
+
         bool armsState(uint32_t state) { return std::find(std::begin(kStates), std::end(kStates), state) != std::end(kStates); }
 
         // CPed::SetAimFlag's writes (as freeaim.cpp's pose): the gun pointed along the view by the game's own IK.
@@ -352,6 +425,19 @@ namespace vcs::viewmodel
         s.onChange = [](int v) { g_fpAimEye = v != 0; };
         add(s);
 
+        s = {};
+        s.key = "camera.fp_sa_hands";
+        s.page = "Game";
+        s.section = "First person";
+        s.label = "San Andreas hands on the gun";
+        s.help = "Raised in first person, the hands hold the gun as San Andreas' Immersive Weapons Pack does: the left hand "
+                 "on the handguard of rifles, shotguns and SMGs (wrapped round the right one on pistols), SA's finger "
+                 "pose. Off: the earlier hand places.";
+        s.type = Type::Toggle;
+        s.defaultValue = 1;
+        s.onChange = [](int v) { g_saHolds = v != 0; };
+        add(s);
+
         static const char *const kKeys[3] = {"camera.viewmodel_right", "camera.viewmodel_ahead", "camera.viewmodel_up"};
         static const char *const kLabels[3] = {"Gun position: right", "Gun position: ahead", "Gun position: up"};
         for (int axis = 0; axis < 3; ++axis)
@@ -389,6 +475,19 @@ namespace vcs::viewmodel
     void install()
     {
         // viewmodel -> ok enabled= active= type= blend= ref=x,y,z hand=x,y,z barrel= sway=y,p applied= (tests)
+        // vmplace right ahead up | vmplace off (tests: the hand's place in view, every gun)
+        mod::addCommand("vmplace", [](const std::string &args, mod::Reply reply) {
+            float v[7] = {0.0f, 0.0f, 0.0f, kConverge, kShoulder[0], kShoulder[1], kShoulder[2]};
+            if (std::sscanf(args.c_str(), "%f %f %f %f %f %f %f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6]) >= 3)
+            {
+                for (int i = 0; i < 7; ++i)
+                    g_tune[i] = v[i];
+                g_placeTune = true;
+            }
+            else
+                g_placeTune = false;
+            reply(g_placeTune ? "ok tuned" : "ok off");
+        });
         mod::addCommand("viewmodel", [](const std::string &, mod::Reply reply) {
             Status st;
             {
@@ -641,7 +740,25 @@ namespace vcs::viewmodel
         // where the hand goes (the view's frame): its place (+ the settings, the bob, the recoil), the barrel (its x)
         // on the crosshair kConverge out, its z (the gun's up) the view's up. The anim's own hand (hip holds, fire anims
         // raising the gun 0.3 m) is left out.
-        const Place p = place(g_type);
+        // San Andreas' raised hold (its FP shots, matched side by side): lower right, the barrel angled in to the middle a few
+        // metres out, the left shoulder low in the middle so the forearm rises from the bottom centre to the handguard
+        const SaHold *sa = g_saHolds.load(std::memory_order_relaxed) ? saHold(g_type) : nullptr;
+        Place p = place(g_type);
+        float converge = kConverge;
+        float leftShoulder[3] = {-kShoulder[0], kShoulder[1], kShoulder[2]};
+        if (sa)
+        {
+            const SaPlace &s = saPlace(g_type);
+            p = {s.right, s.ahead, s.up, p.recoil};
+            converge = s.converge;
+            leftShoulder[0] = -kSaLeftShoulder[0], leftShoulder[1] = kSaLeftShoulder[1], leftShoulder[2] = kSaLeftShoulder[2];
+        }
+        if (g_placeTune.load(std::memory_order_relaxed)) // tests: "vmplace right ahead up"
+        {
+            p = {g_tune[0].load(), g_tune[1].load(), g_tune[2].load(), p.recoil};
+            converge = g_tune[3].load();
+            leftShoulder[0] = -g_tune[4].load(), leftShoulder[1] = g_tune[5].load(), leftShoulder[2] = g_tune[6].load();
+        }
         const float sway = static_cast<float>(g_swayPct.load(std::memory_order_relaxed)) / 100.0f;
         const float walk = std::min(g_speed / 1.5f, 3.0f);
         float pos[3] = {p.right + g_offsetCm[0].load(std::memory_order_relaxed) / 100.0f,
@@ -650,7 +767,7 @@ namespace vcs::viewmodel
         pos[0] += kBob * walk * sway * std::sin(g_phase);
         pos[2] += kBob * walk * sway * 0.5f * std::cos(2.0f * g_phase);
         float ax[3][3];
-        float x0[3] = {-pos[0], kConverge - pos[1], -pos[2]};
+        float x0[3] = {-pos[0], converge - pos[1], -pos[2]};
         normalise(x0);
         float z0[3] = {0.0f, 0.0f, 1.0f};
         const float zx = dot(z0, x0);
@@ -724,8 +841,12 @@ namespace vcs::viewmodel
         // a rifle, palm open beside the barrel): a point per weapon in the gun's frame (the right hand's: x the barrel,
         // z up), the hand turned half a turn about the barrel from the gun's axes - fingers along it, wrapped round
         // from under it. One-handed guns (pistols, the small SMGs) leave the left arm to the game.
+        // San Andreas' holds (saHold): its left hand's place and turn in the right hand's frame, every gun it has one for,
+        // pistols too (the pack holds them two-handed)
         float grip[3] = {0.0f, 0.0f, 0.0f};
-        const bool twoHanded = foreGrip(g_type, grip);
+        const bool twoHanded = sa ? true : foreGrip(g_type, grip);
+        if (sa)
+            std::copy(sa->pos, sa->pos + 3, grip);
         std::copy(grip, grip + 3, g_refPos);
         Bone leftTarget;
         for (int i = 0; i < 3; ++i)
@@ -737,6 +858,8 @@ namespace vcs::viewmodel
             leftTarget.a[1][i] = -target.a[1][i];
             leftTarget.a[2][i] = -target.a[2][i];
         }
+        if (sa)
+            turnedAxes(target.a, sa->q, leftTarget.a);
         // the shoulders at fixed places of the view, under and a little ahead of the eyes - outside the picture, so
         // only the forearms and hands come into view (the game's shoulders are level with the camera: the upper arms
         // filled the lower corners); the whole arm carried there before the IK
@@ -745,7 +868,9 @@ namespace vcs::viewmodel
             Bone(&arm)[5] = side ? left : right;
             if (side && !twoHanded)
                 continue;
-            const float want[3] = {side ? -kShoulder[0] : kShoulder[0], kShoulder[1], kShoulder[2]};
+            float want[3] = {kShoulder[0], kShoulder[1], kShoulder[2]};
+            if (side)
+                std::copy(leftShoulder, leftShoulder + 3, want);
             float at[3], d[3];
             toWorld(want, true, at);
             sub(at, arm[1].p, d);
@@ -789,8 +914,14 @@ namespace vcs::viewmodel
             toWorld(leftPole, false, pole);
             reach(left, leftTarget, pole);
         }
+        // SA's fingers: each finger bone turned from its hand as SA's anim turns it (kept at its place on the hand)
+        if (sa)
+        {
+            turnedAxes(right[3].a, sa->rightFingers, right[4].a);
+            turnedAxes(left[3].a, sa->leftFingers, left[4].a);
+        }
 
-        float w = g_blend * g_blend * (3.0f - 2.0f * g_blend);
+        float w =g_blend * g_blend * (3.0f - 2.0f * g_blend);
         if (g_body)
             w *= g_ads * g_ads * (3.0f - 2.0f * g_ads);
         for (uint32_t i = 0; i < 5; ++i)
