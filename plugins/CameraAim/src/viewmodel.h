@@ -12,10 +12,22 @@
 //   back along its barrel (at most 12 cm).
 // The game's aim flag is kept on (CPed::SetAimFlag's writes, as free aim's) so its own pose and the shots' source follow
 // the view; the shots are the game's (free aim's line hook still puts them on the camera's line). Eased in and out over
-// 0.15 s (states other than idle / attack / fight / aim: jumping, entering a car). VCS_VIEWMODEL=0|1 overrides the setting.
+// 0.15 s (states other than idle / attack / fight / aim: jumping, entering a car).
+//
+// That viewmodel is one of three first-person holds (camera.fp_hold, VCS_FP_HOLD): "as in third person" (the default,
+// 2026-11-01: the body's own anim holds the gun - the same pose third person shows, nothing moved - and the gun comes up
+// only while aiming, through the game's own aim below), the UltimateFP viewmodel above, or the game's arms untouched.
+//
+// The aim raise (camera.aim_raise, third and first person): free aim's R1 with a gun the torso aims (not the arm-aimed
+// Colt45 / Tec9 / silenced Ingram, which come up by themselves) plays the gun's fire anim held at its aim point - what
+// CPed::SetPointGunAt (FUN_001D0198) / PointGunAt (FUN_001D06A0) do when R1 locks on - and blends it out on release,
+// as ClearPointGunAt (FUN_001D0820). VCS has no aim stance without a target, so before this free aim kept the rifle
+// at the hip (game-internals.md 12d, 12t).
 #pragma once
 
 #include <cstdint>
+
+#include "vcs_mod_api.h"
 
 namespace vcs::viewmodel
 {
@@ -35,4 +47,11 @@ namespace vcs::viewmodel
 
     // Game thread, the player's bones built for the draw (before the head is collapsed): the arms moved into view.
     void apply(uint8_t *ram, uint32_t ped, uint32_t bones);
+
+    // Game thread, after frame() in the camera's hook (a guest context at a function's entry): the aim raise's anim
+    // calls into the game (see above).
+    void animate(uint8_t *ram, VcsGuestContext *ctx, void *runtime);
+
+    // Install (CameraAim's): the game's anim functions the aim raise calls; false leaves it off.
+    bool installAnims();
 }

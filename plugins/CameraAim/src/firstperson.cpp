@@ -5,6 +5,7 @@
 #include "freeaim.h"
 #include "mod.h"
 #include "reload.h"
+#include "saanims.h"
 #include "viewmodel.h"
 
 #include <algorithm>
@@ -924,6 +925,7 @@ namespace vcs::firstperson
             if (cam != kCams + rdram[kActiveCam] * kCamSize)
                 return g_origHeight(rdram, ctx, runtime);
             reload::update(rdram); // the reload key, on the game thread (reload.h)
+            saanims::update(rdram); // SA's armed holds on VCS's anims (saanims.h)
             if (mod::freecamFlying())
             {
                 endDriveBy(rdram); // the free camera's (the head shown, the game's near plane, the windows)
@@ -932,7 +934,9 @@ namespace vcs::firstperson
                 freeaim::frame(rdram, rd32(rdram, kPlayerPed), false, freeaim::View::Game, nullptr, nullptr, 0.0f, 0.0f);
                 return g_origHeight(rdram, ctx, runtime);
             }
-            if (!update(rdram, cam))
+            const bool ours = update(rdram, cam);
+            viewmodel::animate(rdram, ctx, runtime); // the aim raise's anim (viewmodel.h)
+            if (!ours)
                 return g_origHeight(rdram, ctx, runtime);
             // first person's view noted for setFov: switching modes (on foot <-> vehicle) CCamera blends the old camera
             // into the new one for about half a second from its own copy of the old - the game's third-person camera -
@@ -1188,6 +1192,7 @@ namespace vcs::firstperson
         }
 
         viewmodel::registerSettings(); // the arms and gun in view
+        saanims::registerSettings();   // SA's armed holds
         reload::registerSettings();    // manual reload (its own section) and its key
 
         s = {};
@@ -1238,6 +1243,8 @@ namespace vcs::firstperson
         mod::api->replace_function(kSetFov, &setFov);
         g_installed = true;
         viewmodel::install();
+        viewmodel::installAnims(); // the aim raise's calls into the game
+        saanims::install();
         // firstperson -> ok on= looking= yaw= pitch= tree= eye= (tests: tools/rig.py firstperson)
         mod::addCommand("firstperson", [](const std::string &, mod::Reply reply) {
             Status st;

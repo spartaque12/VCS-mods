@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <mutex>
 #include <string>
 
@@ -63,7 +64,38 @@ namespace vcs::viewmodel
         constexpr Place kPistol = {0.15f, 0.38f, -0.16f, 1.0f}, kSmg = {0.14f, 0.36f, -0.16f, 0.6f},
                         kLong = {0.14f, 0.24f, -0.19f, 1.3f};
 
-        std::atomic<bool> g_enabled{true};
+        // camera.fp_hold: how first person holds a gun
+        enum Hold : int
+        {
+            kHoldBody = 0,      // as in third person: the body's anim, raised only by the aim (animate)
+            kHoldViewmodel = 1, // UltimateFP's viewmodel (this file's IK)
+            kHoldGame = 2,      // the game's arms, nothing moved
+        };
+        std::atomic<int> g_hold{kHoldBody};
+        std::atomic<bool> g_enabled{false}; // the viewmodel (g_hold == kHoldViewmodel)
+        std::atomic<bool> g_aimRaise{true}; // camera.aim_raise
+
+        // the aim raise (game-internals.md 12d / 12w): the game's anim calls
+        constexpr uint32_t kBlendAnimation = 0x00215868u; // (ped, clump, group, anim id, f12 blend) -> association
+        constexpr uint32_t kGetAssociation = 0x002159A8u; // (ped, clump, anim id) -> the clump's association or 0
+        constexpr uint32_t kPointGunAt = 0x001D06A0u;     // (ped): the fire anim held at its aim point (state 0x16's)
+        constexpr uint32_t kAnimFire = 0xD6u;             // ANIM_WEAPON_FIRE (0xD7 the crouched one)
+        constexpr uint32_t kPedClump = 0x50u, kWeaponInfoGroup = 0x40u;
+        constexpr uint32_t kAssocFlags = 0x08u, kAssocBlendDelta = 0x24u; // flags 4: deleted once blended out
+        constexpr uint32_t kPedVehicle = 0x480u;
+        constexpr uint64_t kDuckingBits = 0xC000ull << 30; // ped +0x1C8: crouched (SetPointGunAt's test)
+        VcsGuestFn g_blendAnimation = nullptr, g_getAssociation = nullptr, g_pointGunAt = nullptr;
+        // frame() -> animate(), the same camera update
+        struct AimWant
+        {
+            uint32_t frame = 0, ped = 0;
+            bool aiming = false, lockedOn = false;
+        } g_aimWant;
+        std::atomic<bool> g_fpAimEye{true}; // camera.fp_aim_eye: as in third person, aiming brings the gun to the eye
+        bool g_body = false;        // this update: the body hold with the eye raise (frame -> apply)
+        bool g_raised = false;      // the fire anim is ours (held at its aim point)
+        uint32_t g_raisedPed = 0;
+        uint32_t g_raiseCount = 0;  // status: anims started
         std::atomic<int> g_offsetCm[3] = {{0}, {0}, {0}}; // right, ahead, up
         std::atomic<int> g_swayPct{100};
 
@@ -272,18 +304,52 @@ namespace vcs::viewmodel
     {
         using namespace mod;
         Spec s;
-        s.key = "camera.viewmodel";
+        s.key = "camera.fp_hold";
         s.page = "Game";
         s.section = "First person";
-        s.label = "Arms and gun in view";
-        s.help = "First person with a gun: the player's own arms hold it in view, pointed at the middle of the picture, as "
-                 "UltimateFP in San Andreas - it sways when you turn and bobs as you walk. Off: the arms are where the "
-                 "game's animation puts them (mostly out of view).";
+        s.label = "Gun hold";
+        s.help = "How first person holds a gun. As in third person: the body's own animation holds it - exactly what third "
+                 "person shows (look down to see it) - and it comes up only while you aim (right mouse button / R1, with "
+                 "\"Raise the gun while aiming\"), as with San Andreas' Immersive Weapons Pack. UltimateFP viewmodel: the "
+                 "arms hold the gun in view at the lower right, swaying and bobbing (the gun position / sway rows). "
+                 "Game's arms: nothing moved.";
+        s.type = Type::Choice;
+        s.choices = {{"As in third person", kHoldBody}, {"UltimateFP viewmodel", kHoldViewmodel}, {"Game's arms", kHoldGame}};
+        s.defaultValue = kHoldBody;
+        s.env = "VCS_FP_HOLD";
+        s.onChange = [](int v) {
+            g_hold = std::clamp(v, 0, 2);
+            g_enabled = g_hold == kHoldViewmodel;
+        };
+        s.read = [] { return g_hold.load(); };
+        add(s);
+
+        s = {};
+        s.key = "camera.aim_raise";
+        s.page = "Game";
+        s.section = "First person";
+        s.label = "Raise the gun while aiming";
+        s.help = "Free aim (right mouse button / R1 without a lock-on): rifles, shotguns, SMGs and the heavy guns come up "
+                 "to the shoulder in the game's own aim pose - what locking on shows - in third and first person, and go "
+                 "back down when you let go. Off: they stay at the hip until fired (the pistols come up either way).";
         s.type = Type::Toggle;
         s.defaultValue = 1;
-        s.env = "VCS_VIEWMODEL";
-        s.onChange = [](int v) { g_enabled = v != 0; };
-        s.read = [] { return g_enabled ? 1 : 0; };
+        s.env = "VCS_AIM_RAISE";
+        s.onChange = [](int v) { g_aimRaise = v != 0; };
+        add(s);
+
+        s = {};
+        s.key = "camera.fp_aim_eye";
+        s.page = "Game";
+        s.section = "First person";
+        s.label = "Aiming brings the gun to the eye";
+        s.help = "With the gun hold \"As in third person\": while you aim in first person the arms bring the gun up in front "
+                 "of you, its barrel on the dot (San Andreas' look), easing back to the body's hold when you let go. Off: "
+                 "first person shows the game's own aim pose, as third person does (the gun at the shoulder, mostly below "
+                 "the picture).";
+        s.type = Type::Toggle;
+        s.defaultValue = 1;
+        s.onChange = [](int v) { g_fpAimEye = v != 0; };
         add(s);
 
         static const char *const kKeys[3] = {"camera.viewmodel_right", "camera.viewmodel_ahead", "camera.viewmodel_up"};
@@ -295,7 +361,7 @@ namespace vcs::viewmodel
             s.page = "Game";
             s.section = "First person";
             s.label = kLabels[axis];
-            s.help = "Moves the arms and gun in view from where they are held by default (0).";
+            s.help = "UltimateFP viewmodel: moves the arms and gun in view from where they are held by default (0).";
             s.type = Type::Integer;
             s.min = -20;
             s.max = 20;
@@ -310,7 +376,7 @@ namespace vcs::viewmodel
         s.page = "Game";
         s.section = "First person";
         s.label = "Gun sway";
-        s.help = "How much the gun lags behind the view's turns and bobs while walking (0 = held still).";
+        s.help = "UltimateFP viewmodel: how much the gun lags behind the view's turns and bobs while walking (0 = held still).";
         s.type = Type::Integer;
         s.min = 0;
         s.max = 200;
@@ -329,11 +395,11 @@ namespace vcs::viewmodel
                 std::lock_guard<std::mutex> lock(g_statusMutex);
                 st = g_status;
             }
-            char text[400];
+            char text[600];
             std::snprintf(text, sizeof(text),
-                          "ok enabled=%d active=%d type=%d blend=%.2f ref=%.3f,%.3f,%.3f hand=%.3f,%.3f,%.3f barrel=%.4f pull=%.3f "
+                          "ok hold=%d aimraise=%d raised=%d raises=%u enabled=%d active=%d type=%d blend=%.2f ref=%.3f,%.3f,%.3f hand=%.3f,%.3f,%.3f barrel=%.4f pull=%.3f "
                           "ads=%.2f reload=%.2f sway=%.3f,%.3f applied=%u ax=%.2f,%.2f,%.2f ay=%.2f,%.2f,%.2f az=%.2f,%.2f,%.2f",
-                          g_enabled ? 1 : 0, st.active ? 1 : 0, st.type, st.blend, st.ref[0], st.ref[1], st.ref[2], st.hand[0],
+                          g_hold.load(), g_aimRaise ? 1 : 0, g_raised ? 1 : 0, g_raiseCount, g_enabled ? 1 : 0, st.active ? 1 : 0, st.type, st.blend, st.ref[0], st.ref[1], st.ref[2], st.hand[0],
                           st.hand[1], st.hand[2], st.barrel, g_pull, g_ads, g_reload, st.sway[0], st.sway[1], st.applied, st.axes[0][0], st.axes[0][1], st.axes[0][2],
                           st.axes[1][0], st.axes[1][1], st.axes[1][2], st.axes[2][0], st.axes[2][1], st.axes[2][2]);
             reply(text);
@@ -343,15 +409,22 @@ namespace vcs::viewmodel
     void frame(uint8_t *ram, uint32_t ped, bool first, bool lockedOn, bool aiming, const float source[3],
                const float front[3], float yaw, float pitch)
     {
+        g_aimWant = {rd32(ram, kFrameCounter), ped, aiming, lockedOn};
         const int type = ped ? currentWeapon(ram, ped) : -1;
-        const bool want = g_enabled.load(std::memory_order_relaxed) && first && ped && held(type) &&
-                          armsState(rd32(ram, ped + kPedState));
+        // as in third person: the viewmodel's raised pose only while aiming (its share the ADS ease), the body's own
+        // hold otherwise
+        g_body = g_hold.load(std::memory_order_relaxed) == kHoldBody && g_fpAimEye.load(std::memory_order_relaxed);
+        const bool armed = first && ped && held(type) && armsState(rd32(ram, ped + kPedState));
+        const bool want = armed && (g_enabled.load(std::memory_order_relaxed) ||
+                                    (g_body && (aiming || lockedOn || g_ads > 0.0f)));
         g_dt = std::clamp(rdf(ram, kTimeStep), 0.0f, 3.0f) / 50.0f;
         g_blend = std::clamp(g_blend + (want ? 1.0f : -1.0f) * g_dt / kBlendTime, 0.0f, 1.0f);
         g_active = (want || g_blend > 0.0f) && ped && held(type) && first;
         if (!g_active)
         {
             g_blend = 0.0f;
+            if (g_body)
+                g_ads = 0.0f;
             if (!aiming)
                 lower(ram, ped);
             publish(nullptr, 0.0f, 0.0f, 0.0f, false);
@@ -375,7 +448,7 @@ namespace vcs::viewmodel
         g_frame = rd32(ram, kFrameCounter);
 
         // the gun pointed along the view by the game (locked on: at the target, the game's; free aim: its own pose)
-        if (want && !lockedOn && !aiming)
+        if (want && !lockedOn && !aiming && !g_body)
         {
             pose(ram, ped, type, yaw, pitch);
             g_posed = true;
@@ -409,7 +482,8 @@ namespace vcs::viewmodel
             // reloading (the slot's state 2): down, whatever else
             const bool reloadingNow = reload::reloading(ram, ped);
             g_reload = std::clamp(g_reload + (reloadingNow ? 1.0f : -1.0f) * g_dt / kReloadEase, 0.0f, 1.0f);
-            const bool raise = (aiming || lockedOn || firing) && !reloadingNow;
+            // (as in third person: aiming only - hip fire is the body's fire anim, as third person's)
+            const bool raise = (aiming || lockedOn || (firing && !g_body)) && !reloadingNow;
             const float t = raise ? (firing && !aiming && !lockedOn ? kAdsUpFiring : kAdsUp) : kAdsDown;
             g_ads = std::clamp(g_ads + (raise ? 1.0f : -1.0f) * g_dt / t, 0.0f, 1.0f);
         }
@@ -585,7 +659,8 @@ namespace vcs::viewmodel
         normalise(z0);
         // at rest: lowered and turned down / in (smoothstep of the aim's share)
         {
-            const float a = g_ads * g_ads * (3.0f - 2.0f * g_ads), rest = 1.0f - a;
+            // (as in third person the raised pose itself, eased in from the body's hold by the weight below)
+            const float a = g_body ? 1.0f : g_ads * g_ads * (3.0f - 2.0f * g_ads), rest = 1.0f - a;
             for (int i = 0; i < 3; ++i)
                 pos[i] += kRestOffset[i] * rest;
             const float rl = g_reload * g_reload * (3.0f - 2.0f * g_reload);
@@ -649,7 +724,7 @@ namespace vcs::viewmodel
         // a rifle, palm open beside the barrel): a point per weapon in the gun's frame (the right hand's: x the barrel,
         // z up), the hand turned half a turn about the barrel from the gun's axes - fingers along it, wrapped round
         // from under it. One-handed guns (pistols, the small SMGs) leave the left arm to the game.
-        float grip[3];
+        float grip[3] = {0.0f, 0.0f, 0.0f};
         const bool twoHanded = foreGrip(g_type, grip);
         std::copy(grip, grip + 3, g_refPos);
         Bone leftTarget;
@@ -715,7 +790,9 @@ namespace vcs::viewmodel
             reach(left, leftTarget, pole);
         }
 
-        const float w = g_blend * g_blend * (3.0f - 2.0f * g_blend);
+        float w = g_blend * g_blend * (3.0f - 2.0f * g_blend);
+        if (g_body)
+            w *= g_ads * g_ads * (3.0f - 2.0f * g_ads);
         for (uint32_t i = 0; i < 5; ++i)
         {
             writeBone(ram, bones, 12 + i, origRight[i], right[i], w);
@@ -728,5 +805,117 @@ namespace vcs::viewmodel
         toView(right[3].a[0], false, barrel);
         normalise(barrel);
         publish(handView, barrel[1], sy, spch, true);
+    }
+
+    namespace
+    {
+        // A call into the game from a hook's context (at a function's entry: its stack free below sp): the arguments in
+        // a0..a3 / f12, the guest's registers and pc put back afterwards. Returns v0.
+        uint32_t callGuest(VcsGuestFn fn, uint32_t address, uint8_t *rdram, VcsGuestContext *ctx, void *runtime,
+                           std::initializer_list<uint32_t> args, float f12 = 0.0f)
+        {
+            uint8_t gprs[32 * 16];
+            float fprs[32];
+            uint32_t pc;
+            uint8_t *bytes = mod::ctxBytes(ctx);
+            std::memcpy(gprs, bytes + mod::api->ctx_gpr_offset, sizeof(gprs));
+            std::memcpy(fprs, mod::fpr(ctx), sizeof(fprs));
+            std::memcpy(&pc, bytes + mod::api->ctx_pc_offset, 4);
+            int reg = 4;
+            for (uint32_t a : args)
+                mod::setGpr32(ctx, reg++, a);
+            mod::fpr(ctx)[12] = f12;
+            mod::setGpr32(ctx, 31, pc); // back to here (pc is restored below anyway)
+            mod::setPc(ctx, address);
+            fn(rdram, ctx, runtime);
+            const uint32_t v0 = mod::gpr32(ctx, 2);
+            std::memcpy(bytes + mod::api->ctx_gpr_offset, gprs, sizeof(gprs));
+            std::memcpy(mod::fpr(ctx), fprs, sizeof(fprs));
+            std::memcpy(bytes + mod::api->ctx_pc_offset, &pc, 4);
+            return v0;
+        }
+
+        uint32_t weaponInfo(const uint8_t *ram, int type)
+        {
+            const uint32_t table = rd32(ram, kWeaponInfos);
+            const uint32_t infos = table ? rd32(ram, table + 4) : 0;
+            return infos && type >= 0 ? infos + static_cast<uint32_t>(type) * kWeaponInfoSize : 0;
+        }
+
+        // ClearPointGunAt's blend-out of the fire anim (flags 4: freed once out, blend delta -4)
+        void blendOut(uint8_t *ram, uint32_t assoc)
+        {
+            if (!assoc || rdf(ram, assoc + kAssocBlendDelta) < 0.0f)
+                return;
+            wr32(ram, assoc + kAssocFlags, rd32(ram, assoc + kAssocFlags) | 4u);
+            wrf(ram, assoc + kAssocBlendDelta, -4.0f);
+        }
+    }
+
+    void animate(uint8_t *ram, VcsGuestContext *ctx, void *runtime)
+    {
+        if (!g_blendAnimation || !g_getAssociation || !g_pointGunAt)
+            return;
+        const uint32_t frameNow = rd32(ram, kFrameCounter);
+        const AimWant w = g_aimWant;
+        const uint32_t ped = w.ped;
+        const bool fresh = ped && w.frame == frameNow;
+        const int type = fresh ? currentWeapon(ram, ped) : -1;
+        const uint32_t info = weaponInfo(ram, type);
+        const uint32_t state = fresh ? rd32(ram, ped + kPedState) : 0;
+        // free aim's R1 (not a lock-on: the game's own then), standing (not crouched, not in a vehicle), a gun the torso
+        // aims (the arm-aimed pistols come up by themselves), not reloading
+        bool want = g_aimRaise.load(std::memory_order_relaxed) && fresh && w.aiming && !w.lockedOn && held(type) && info &&
+                    !(ram[info & kRamMask] & 0x80) && rd32(ram, ped + kPedVehicle) == 0 &&
+                    (rd64(ram, ped + kPedFlags) & kDuckingBits) != kDuckingBits && !reload::reloading(ram, ped);
+        const uint32_t clump = ped ? rd32(ram, ped + kPedClump) : 0;
+        if (!clump)
+            want = false;
+        if (want)
+        {
+            // firing (attack 0x10): the game's own attack drives the same anim; it is held again once back to idle
+            if (state == 1u)
+            {
+                uint32_t assoc = callGuest(g_getAssociation, kGetAssociation, ram, ctx, runtime, {ped, clump, kAnimFire});
+                if (!assoc || rdf(ram, assoc + kAssocBlendDelta) < 0.0f)
+                {
+                    // SetPointGunAt's: the weapon's group, blended in at 4, then its delta 8 and +0x10 cleared
+                    assoc = callGuest(g_blendAnimation, kBlendAnimation, ram, ctx, runtime,
+                                      {ped, clump, rd32(ram, info + kWeaponInfoGroup), kAnimFire}, 4.0f);
+                    if (assoc)
+                    {
+                        wr32(ram, assoc + 0x10u, 0);
+                        wrf(ram, assoc + kAssocBlendDelta, 8.0f);
+                        ++g_raiseCount;
+                    }
+                }
+                if (assoc)
+                    callGuest(g_pointGunAt, kPointGunAt, ram, ctx, runtime, {ped}); // held at the aim point
+            }
+            g_raised = true;
+            g_raisedPed = ped;
+            return;
+        }
+        if (!g_raised)
+            return;
+        g_raised = false;
+        // let go: blended out as ClearPointGunAt does - unless firing (the attack's own) or the ped is gone
+        const uint32_t p = rd32(ram, 0x004E4910u);
+        if (p && p == g_raisedPed && rd32(ram, p + kPedState) == 1u)
+            if (const uint32_t c = rd32(ram, p + kPedClump))
+                blendOut(ram, callGuest(g_getAssociation, kGetAssociation, ram, ctx, runtime, {p, c, kAnimFire}));
+        g_raisedPed = 0;
+    }
+
+    bool installAnims()
+    {
+        g_blendAnimation = mod::api->lookup_function(kBlendAnimation);
+        g_getAssociation = mod::api->lookup_function(kGetAssociation);
+        g_pointGunAt = mod::api->lookup_function(kPointGunAt);
+        if (g_blendAnimation && g_getAssociation && g_pointGunAt)
+            return true;
+        g_blendAnimation = g_getAssociation = g_pointGunAt = nullptr;
+        mod::log("CameraAim: the game's anim functions not found - the aim raise is off\n");
+        return false;
     }
 }
