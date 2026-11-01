@@ -3,20 +3,23 @@
 // No extra model: the player's real arms, posed when the bones are built for the draw (firstperson.cpp's hook before
 // the skinned mesh is drawn, 12c). In first person on foot with a gun (not the sniper rifles / rocket launcher, not melee):
 // - the right hand (bone 15, the gun drawn in its frame) is put at a fixed place of the view per kind of gun (+ the
-//   settings' offsets), its x axis (the barrel) on the crosshair 30 m out, its z (the gun's up) the view's up; the
-//   gun sways against the view's turns, bobs with walking speed and kicks back / up when the clip's count drops;
-// - two-handed guns: the left hand on a fore-grip point per weapon in the gun's frame, turned half a turn about the
-//   barrel (wrapped round it from under) - not where VCS's hip anims put it;
+//   settings' offsets), turned so the model's bore (measured per gun: the converted SA models' bores are a few degrees
+//   off the hand's x) is parallel to the view - on screen the barrel's line runs into the crosshair's dot at every
+//   pitch, yaw and turn - its z (the gun's up) the view's up; the gun sways (its place only) against the view's turns,
+//   bobs with walking speed, kicks back / up when the clip's count drops, and sits a little lower until aimed;
+// - two-handed guns: the left hand on the handguard as San Andreas holds it (camera.fp_sa_hands; the earlier by-eye
+//   fore-grip points without it);
 // - both shoulders are carried to fixed places under the eyes, outside the picture, and each arm is solved with two-bone
-//   IK (upper arm, forearm, the elbow bent down and out): only forearms and hands show. A grip out of reach draws the gun
-//   back along its barrel (at most 12 cm).
+//   IK (upper arm, forearm, the elbow bent down and out): only forearms and hands show, from the bottom of the picture
+//   as in SA's first person. A grip out of reach draws the gun back along its barrel (at most 12 cm).
 // The game's aim flag is kept on (CPed::SetAimFlag's writes, as free aim's) so its own pose and the shots' source follow
 // the view; the shots are the game's (free aim's line hook still puts them on the camera's line). Eased in and out over
 // 0.15 s (states other than idle / attack / fight / aim: jumping, entering a car).
 //
-// That viewmodel is one of three first-person holds (camera.fp_hold, VCS_FP_HOLD): "as in third person" (the default,
-// 2026-11-01: the body's own anim holds the gun - the same pose third person shows, nothing moved - and the gun comes up
-// only while aiming, through the game's own aim below), the UltimateFP viewmodel above, or the game's arms untouched.
+// That viewmodel is one of three first-person holds (camera.fp_hold, VCS_FP_HOLD): the viewmodel above (the default again
+// since 2026-11-02, the user's choice), "as in third person" (the body's own anim holds the gun - the same pose third
+// person shows, nothing moved - and the gun comes up only while aiming, through the game's own aim below), or the game's
+// arms untouched.
 //
 // The aim raise (camera.aim_raise, third and first person): free aim's R1 with a gun the torso aims (not the arm-aimed
 // Colt45 / Tec9 / silenced Ingram, which come up by themselves) plays the gun's fire anim held at its aim point - what

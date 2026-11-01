@@ -42,15 +42,18 @@ namespace vcs::viewmodel
         // holds the gun, 12c, 12g)
 
         constexpr float kPi = 3.14159265f, kTwoPi = 6.2831855f;
-        constexpr float kConverge = 30.0f;   // m: the barrel aims at the crosshair this far out
+        // the barrel parallel to the view: on screen its line runs into the crosshair's dot (the view's vanishing point)
+        // at every pitch, yaw and distance, wherever the hand is; a distance > 0 aims it at the view's line that far out
+        // instead (it crosses the dot there and runs past it beyond - the earlier 30 m / SA's 2 m)
+        constexpr float kConverge = 0.0f;
         constexpr float kBlendTime = 0.15f;  // s: eased in / out (a state the arms are not ours in: jumping, entering a car)
         constexpr float kSwayRateTime = 0.08f, kSwayGain = 0.035f, kSwayMax = 0.10f; // s, rad per rad/s, rad
         constexpr float kStride = 1.5f, kBob = 0.006f;                              // m per cycle, m at walking pace
         constexpr float kShoulder[3] = {0.19f, 0.08f, -0.30f}; // m: the right shoulder in the view (the left mirrored)
         constexpr float kMaxPull = 0.12f;      // m: the gun drawn back for the left hand's reach, at most
-        // at rest (not aiming): the hand lower, back and a little in, the barrel down and inward; raised while R1 /
-        // the right mouse button aims or the gun fires, eased like UltimateFP's ADS (200 ms up, 180 ms down)
-        constexpr float kRestOffset[3] = {-0.03f, -0.03f, -0.06f}, kRestPitch = -0.30f, kRestYaw = 0.22f; // m, rad
+        // at rest (not aiming): the hand lower and back, the barrel still on the dot; raised while R1 / the right mouse
+        // button aims or the gun fires, eased like UltimateFP's ADS (200 ms up, 180 ms down)
+        constexpr float kRestOffset[3] = {0.0f, -0.03f, -0.04f}; // m
         constexpr float kReloadOffset[3] = {-0.04f, -0.02f, -0.025f}, kReloadPitch = -0.12f, kReloadRoll = 0.7f; // m, rad
         constexpr float kReloadEase = 0.15f; // s
         constexpr float kAdsUp = 0.20f, kAdsDown = 0.18f, kAdsUpFiring = 0.08f;                          // s
@@ -72,8 +75,8 @@ namespace vcs::viewmodel
             kHoldViewmodel = 1, // UltimateFP's viewmodel (this file's IK)
             kHoldGame = 2,      // the game's arms, nothing moved
         };
-        std::atomic<int> g_hold{kHoldBody};
-        std::atomic<bool> g_enabled{false}; // the viewmodel (g_hold == kHoldViewmodel)
+        std::atomic<int> g_hold{kHoldViewmodel};
+        std::atomic<bool> g_enabled{true}; // the viewmodel (g_hold == kHoldViewmodel)
         std::atomic<bool> g_aimRaise{true}; // camera.aim_raise
 
         // the aim raise (game-internals.md 12d / 12w): the game's anim calls
@@ -131,6 +134,7 @@ namespace vcs::viewmodel
             float blend = 0, ref[3] = {}, hand[3] = {}, barrel = 0, sway[2] = {};
             uint32_t applied = 0;
             float axes[3][3] = {}; // the game's hand axes in the view
+            float elbows[2][3] = {}, leftHand[3] = {}; // ours, in the view (right, left)
         };
         std::mutex g_statusMutex;
         Status g_status;
@@ -261,24 +265,60 @@ namespace vcs::viewmodel
                 for (int j = 0; j < 3; ++j)
                     out[i][j] = m[0][i] * parent[0][j] + m[1][i] * parent[1][j] + m[2][i] * parent[2][j];
         }
+        // the right hand's place (m: right, ahead, up of the eyes), the barrel parallel to the view (kConverge), and both
+        // shoulders (x right) - under the picture, so only forearms and hands show, as SA's first person: the right
+        // forearm from the lower right corner to the grip, the left from the bottom middle up to the handguard
         struct SaPlace
         {
-            float right, ahead, up, converge;
+            float right, ahead, up, converge, left[3], rightShoulder[3];
         };
-        constexpr SaPlace kSaLong = {0.20f, 0.20f, -0.24f, 2.0f}, kSaSmgPlace = {0.18f, 0.26f, -0.22f, 2.0f},
-                          kSaPistolPlace = {0.14f, 0.36f, -0.18f, 4.0f};
-        constexpr float kSaLeftShoulder[3] = {0.02f, 0.0f, -0.45f}; // right of the middle (mirrored), ahead, up
+        constexpr SaPlace kSaLong = {0.17f, 0.36f, -0.22f, kConverge, {0.04f, 0.42f, -0.62f}, {0.24f, 0.05f, -0.40f}},
+                          kSaSmgPlace = {0.17f, 0.36f, -0.22f, kConverge, {0.04f, 0.42f, -0.62f}, {0.24f, 0.05f, -0.40f}},
+                          kSaPistolPlace = {0.17f, 0.36f, -0.22f, kConverge, {0.04f, 0.42f, -0.62f}, {0.24f, 0.05f, -0.40f}},
+                          kSaHeavyPlace = {0.30f, 0.40f, -0.24f, kConverge, {0.08f, 0.45f, -0.65f}, {0.30f, 0.08f, -0.40f}};
         const SaPlace &saPlace(int type)
         {
             if (type == 19 || type == 20)
                 return kSaPistolPlace;
             if (type >= 24 && type <= 27)
                 return kSaSmgPlace;
+            if (type >= 33)
+                return kSaHeavyPlace;
             return kSaLong;
         }
+        // The bore's direction in the hand's frame (x the hand's barrel axis, y left, z up: the tangents of its turn left
+        // and up) - the converted SA models are not drawn with the bore exactly along the hand's x (SA's anims point them):
+        // measured on screenshots per gun, so the drawn barrel's line runs into the dot (game-internals.md 12t)
+        struct Bore
+        {
+            float left, up;
+        };
+        Bore bore(int type)
+        {
+            switch (type) // (the vmbore command, hidden runs at FOV 87: the barrel's line through the dot, 2026-11-02)
+            {
+            case 19: return {-0.070f, 0.075f};  // Colt45
+            case 20: return {-0.025f, -0.074f}; // Python (Desert Eagle)
+            case 21: return {-0.110f, 0.130f};  // Shotgun (chromegun)
+            case 22: return {-0.300f, 0.000f};  // SPAS-12
+            case 23: return {0.000f, 0.160f};   // stubby (sawn-off)
+            case 24: return {-0.067f, 0.155f};  // Tec9
+            case 25: return {-0.110f, 0.030f};  // Uzi
+            case 26: return {0.000f, 0.080f};   // silenced Ingram (VCS's model)
+            case 27: return {-0.060f, 0.035f};  // MP5
+            case 28: return {-0.086f, 0.050f};  // M4
+            case 29: return {-0.064f, 0.042f};  // Ruger (AK-47)
+            case 33: return {0.000f, 0.650f};   // flamethrower (held by its handle, the nozzle 33 degrees up)
+            case 34: return {0.000f, 0.300f};   // M60 (VCS's model, by its carry handle)
+            case 35: return {-0.060f, 0.450f};  // minigun (by its top handle)
+            default: return {0.0f, 0.0f};
+            }
+        }
+        std::atomic<bool> g_boreTune{false};
+        std::atomic<float> g_boreTuned[2] = {{0.0f}, {0.0f}};
         std::atomic<bool> g_saHolds{true}; // camera.fp_sa_hands
         std::atomic<bool> g_placeTune{false};
-        std::atomic<float> g_tune[7] = {{0.0f}, {0.0f}, {0.0f}, {30.0f}, {0.19f}, {0.08f}, {-0.30f}}; // + converge, left shoulder
+        std::atomic<float> g_tune[10] = {{0.0f}, {0.0f}, {0.0f}, {0.0f}, {-0.19f}, {0.08f}, {-0.30f}, {0.19f}, {0.08f}, {-0.30f}}; // + converge, left, right shoulder
 
         bool armsState(uint32_t state) { return std::find(std::begin(kStates), std::end(kStates), state) != std::end(kStates); }
 
@@ -383,14 +423,15 @@ namespace vcs::viewmodel
         s.page = "Game";
         s.section = "First person";
         s.label = "Gun hold";
-        s.help = "How first person holds a gun. As in third person: the body's own animation holds it - exactly what third "
-                 "person shows (look down to see it) - and it comes up only while you aim (right mouse button / R1, with "
-                 "\"Raise the gun while aiming\"), as with San Andreas' Immersive Weapons Pack. UltimateFP viewmodel: the "
-                 "arms hold the gun in view at the lower right, swaying and bobbing (the gun position / sway rows). "
-                 "Game's arms: nothing moved.";
+        s.help = "How first person holds a gun. Viewmodel (the default): both arms hold the gun in view at the lower right as "
+                 "in San Andreas' first person - right hand on the grip, left hand under the handguard, forearms from the "
+                 "bottom of the picture - its barrel always running into the crosshair's dot, lowered a little until you "
+                 "aim, swaying and bobbing (the gun position / sway rows). As in third person: the body's own animation "
+                 "holds it - exactly what third person shows (look down to see it) - and it comes up only while you aim "
+                 "(right mouse button / R1). Game's arms: nothing moved.";
         s.type = Type::Choice;
-        s.choices = {{"As in third person", kHoldBody}, {"UltimateFP viewmodel", kHoldViewmodel}, {"Game's arms", kHoldGame}};
-        s.defaultValue = kHoldBody;
+        s.choices = {{"As in third person", kHoldBody}, {"Viewmodel (SA style)", kHoldViewmodel}, {"Game's arms", kHoldGame}};
+        s.defaultValue = kHoldViewmodel;
         s.env = "VCS_FP_HOLD";
         s.onChange = [](int v) {
             g_hold = std::clamp(v, 0, 2);
@@ -432,9 +473,9 @@ namespace vcs::viewmodel
         s.page = "Game";
         s.section = "First person";
         s.label = "San Andreas hands on the gun";
-        s.help = "Raised in first person, the hands hold the gun as San Andreas' Immersive Weapons Pack does: the left hand "
-                 "on the handguard of rifles, shotguns and SMGs (wrapped round the right one on pistols), SA's finger "
-                 "pose. Off: the earlier hand places.";
+        s.help = "In first person the hands hold the gun as San Andreas' Immersive Weapons Pack does: the left hand on the "
+                 "handguard of rifles, shotguns and SMGs (wrapped round the right one on pistols), SA's finger pose, the "
+                 "arms placed as SA's first person. Off: the earlier hand places.";
         s.type = Type::Toggle;
         s.defaultValue = 1;
         s.onChange = [](int v) { g_saHolds = v != 0; };
@@ -477,12 +518,14 @@ namespace vcs::viewmodel
     void install()
     {
         // viewmodel -> ok enabled= active= type= blend= ref=x,y,z hand=x,y,z barrel= sway=y,p applied= (tests)
-        // vmplace right ahead up | vmplace off (tests: the hand's place in view, every gun)
+        // vmplace right ahead up [converge [left shoulder x y z [right shoulder x y z]]] | vmplace off (tests: the hand's
+        // place in view, every gun)
         mod::addCommand("vmplace", [](const std::string &args, mod::Reply reply) {
-            float v[7] = {0.0f, 0.0f, 0.0f, kConverge, kShoulder[0], kShoulder[1], kShoulder[2]};
-            if (std::sscanf(args.c_str(), "%f %f %f %f %f %f %f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6]) >= 3)
+            float v[10] = {0.0f, 0.0f, 0.0f, kConverge, -kShoulder[0], kShoulder[1], kShoulder[2], kShoulder[0], kShoulder[1], kShoulder[2]};
+            if (std::sscanf(args.c_str(), "%f %f %f %f %f %f %f %f %f %f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7],
+                            &v[8], &v[9]) >= 3)
             {
-                for (int i = 0; i < 7; ++i)
+                for (int i = 0; i < 10; ++i)
                     g_tune[i] = v[i];
                 g_placeTune = true;
             }
@@ -490,19 +533,36 @@ namespace vcs::viewmodel
                 g_placeTune = false;
             reply(g_placeTune ? "ok tuned" : "ok off");
         });
+        // vmbore left up | vmbore off (tests: the bore's direction in the hand's frame, tangents)
+        mod::addCommand("vmbore", [](const std::string &args, mod::Reply reply) {
+            float v[2] = {0.0f, 0.0f};
+            if (std::sscanf(args.c_str(), "%f %f", &v[0], &v[1]) == 2)
+            {
+                g_boreTuned[0] = v[0];
+                g_boreTuned[1] = v[1];
+                g_boreTune = true;
+            }
+            else
+                g_boreTune = false;
+            reply(g_boreTune ? "ok tuned" : "ok off");
+        });
         mod::addCommand("viewmodel", [](const std::string &, mod::Reply reply) {
             Status st;
             {
                 std::lock_guard<std::mutex> lock(g_statusMutex);
                 st = g_status;
             }
-            char text[600];
+            char text[800];
             std::snprintf(text, sizeof(text),
                           "ok hold=%d aimraise=%d raised=%d raises=%u assoc=%08x enabled=%d active=%d type=%d blend=%.2f ref=%.3f,%.3f,%.3f hand=%.3f,%.3f,%.3f barrel=%.4f pull=%.3f "
                           "ads=%.2f reload=%.2f sway=%.3f,%.3f applied=%u ax=%.2f,%.2f,%.2f ay=%.2f,%.2f,%.2f az=%.2f,%.2f,%.2f",
                           g_hold.load(), g_aimRaise ? 1 : 0, g_raised ? 1 : 0, g_raiseCount, g_assocDbg, g_enabled ? 1 : 0, st.active ? 1 : 0, st.type, st.blend, st.ref[0], st.ref[1], st.ref[2], st.hand[0],
                           st.hand[1], st.hand[2], st.barrel, g_pull, g_ads, g_reload, st.sway[0], st.sway[1], st.applied, st.axes[0][0], st.axes[0][1], st.axes[0][2],
                           st.axes[1][0], st.axes[1][1], st.axes[1][2], st.axes[2][0], st.axes[2][1], st.axes[2][2]);
+            const size_t n = std::strlen(text);
+            std::snprintf(text + n, sizeof(text) - n, " elbowR=%.3f,%.3f,%.3f elbowL=%.3f,%.3f,%.3f handL=%.3f,%.3f,%.3f",
+                          st.elbows[0][0], st.elbows[0][1], st.elbows[0][2], st.elbows[1][0], st.elbows[1][1], st.elbows[1][2],
+                          st.leftHand[0], st.leftHand[1], st.leftHand[2]);
             reply(text);
         });
     }
@@ -748,18 +808,24 @@ namespace vcs::viewmodel
         Place p = place(g_type);
         float converge = kConverge;
         float leftShoulder[3] = {-kShoulder[0], kShoulder[1], kShoulder[2]};
-        if (sa)
+        float rightShoulder[3] = {kShoulder[0], kShoulder[1], kShoulder[2]};
+        if (g_saHolds.load(std::memory_order_relaxed)) // (the flamethrower / minigun too: the by-eye left hand below)
         {
             const SaPlace &s = saPlace(g_type);
             p = {s.right, s.ahead, s.up, p.recoil};
             converge = s.converge;
-            leftShoulder[0] = -kSaLeftShoulder[0], leftShoulder[1] = kSaLeftShoulder[1], leftShoulder[2] = kSaLeftShoulder[2];
+            std::copy(s.left, s.left + 3, leftShoulder);
+            std::copy(s.rightShoulder, s.rightShoulder + 3, rightShoulder);
         }
-        if (g_placeTune.load(std::memory_order_relaxed)) // tests: "vmplace right ahead up"
+        if (g_placeTune.load(std::memory_order_relaxed)) // tests: "vmplace right ahead up ..."
         {
             p = {g_tune[0].load(), g_tune[1].load(), g_tune[2].load(), p.recoil};
             converge = g_tune[3].load();
-            leftShoulder[0] = -g_tune[4].load(), leftShoulder[1] = g_tune[5].load(), leftShoulder[2] = g_tune[6].load();
+            for (int i = 0; i < 3; ++i)
+            {
+                leftShoulder[i] = g_tune[4 + i].load();
+                rightShoulder[i] = g_tune[7 + i].load();
+            }
         }
         const float sway = static_cast<float>(g_swayPct.load(std::memory_order_relaxed)) / 100.0f;
         const float walk = std::min(g_speed / 1.5f, 3.0f);
@@ -769,8 +835,12 @@ namespace vcs::viewmodel
         pos[0] += kBob * walk * sway * std::sin(g_phase);
         pos[2] += kBob * walk * sway * 0.5f * std::cos(2.0f * g_phase);
         float ax[3][3];
-        float x0[3] = {-pos[0], converge - pos[1], -pos[2]};
-        normalise(x0);
+        float x0[3] = {0.0f, 1.0f, 0.0f};
+        if (converge > 0.0f)
+        {
+            x0[0] = -pos[0], x0[1] = converge - pos[1], x0[2] = -pos[2];
+            normalise(x0);
+        }
         float z0[3] = {0.0f, 0.0f, 1.0f};
         const float zx = dot(z0, x0);
         for (int i = 0; i < 3; ++i)
@@ -793,7 +863,8 @@ namespace vcs::viewmodel
                 for (int i = 0; i < 3; ++i)
                     z0[i] = z0[i] * crr - side[i] * srr;
             }
-            const float yw = kRestYaw * rest, pt = kRestPitch * rest + kReloadPitch * rl;
+            // (the barrel stays on the dot at rest: lowered, not turned away - only reloading tips it)
+            const float yw = 0.0f, pt = kReloadPitch * rl;
             const float cyw = std::cos(yw), syw = std::sin(yw), cpt = std::cos(pt), spt = std::sin(pt);
             for (float *v : {x0, z0})
             {
@@ -821,6 +892,27 @@ namespace vcs::viewmodel
         ax[1][0] = ax[2][1] * ax[0][2] - ax[2][2] * ax[0][1]; // y = z x x
         ax[1][1] = ax[2][2] * ax[0][0] - ax[2][0] * ax[0][2];
         ax[1][2] = ax[2][0] * ax[0][1] - ax[2][1] * ax[0][0];
+        // so far the bore's frame (x the bore, z the gun's up): the hand turned so that the model's bore lies along it
+        {
+            Bore b = bore(g_type);
+            if (g_boreTune.load(std::memory_order_relaxed))
+                b = {g_boreTuned[0].load(), g_boreTuned[1].load()};
+            if (b.left != 0.0f || b.up != 0.0f)
+            {
+                // the bore's frame in the hand's: b1 the bore, b3 the hand's z made square to it, b2 = b3 x b1
+                float b1[3] = {1.0f, b.left, b.up};
+                normalise(b1);
+                float b3[3] = {-b1[2] * b1[0], -b1[2] * b1[1], 1.0f - b1[2] * b1[2]};
+                normalise(b3);
+                const float b2[3] = {b3[1] * b1[2] - b3[2] * b1[1], b3[2] * b1[0] - b3[0] * b1[2], b3[0] * b1[1] - b3[1] * b1[0]};
+                // the hand's axis k in the view = sum over i of (the bore frame's axis i in the view) x (b_i)_k
+                float hand[3][3];
+                for (int k = 0; k < 3; ++k)
+                    for (int i = 0; i < 3; ++i)
+                        hand[k][i] = ax[0][i] * b1[k] + ax[1][i] * b2[k] + ax[2][i] * b3[k];
+                std::copy(&hand[0][0], &hand[0][0] + 9, &ax[0][0]);
+            }
+        }
         // the lag: turned against the view's turn, about the eyes
         const float sy = std::clamp(-g_yawRate * kSwayGain * sway, -kSwayMax, kSwayMax);
         const float spch = std::clamp(-g_pitchRate * kSwayGain * sway, -kSwayMax, kSwayMax);
@@ -831,9 +923,8 @@ namespace vcs::viewmodel
             v[1] = y * cpch - v[2] * snp;
             v[2] = y * snp + v[2] * cpch;
         };
+        // (the place only: the barrel stays parallel to the view, its line on the dot while turning)
         swayed(pos);
-        for (auto &axis : ax)
-            swayed(axis);
         Bone target;
         toWorld(pos, true, target.p);
         for (int r = 0; r < 3; ++r)
@@ -870,7 +961,7 @@ namespace vcs::viewmodel
             Bone(&arm)[5] = side ? left : right;
             if (side && !twoHanded)
                 continue;
-            float want[3] = {kShoulder[0], kShoulder[1], kShoulder[2]};
+            float want[3] = {rightShoulder[0], rightShoulder[1], rightShoulder[2]};
             if (side)
                 std::copy(leftShoulder, leftShoulder + 3, want);
             float at[3], d[3];
@@ -934,6 +1025,12 @@ namespace vcs::viewmodel
         }
         g_twoHanded = twoHanded;
         float handView[3], barrel[3];
+        {
+            std::lock_guard<std::mutex> lock(g_statusMutex);
+            toView(right[2].p, true, g_status.elbows[0]);
+            toView(left[2].p, true, g_status.elbows[1]);
+            toView(left[3].p, true, g_status.leftHand);
+        }
         toView(right[3].p, true, handView);
         toView(right[3].a[0], false, barrel);
         normalise(barrel);

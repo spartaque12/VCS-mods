@@ -39,9 +39,11 @@ The camera and aiming mods of the port, together because they share one camera h
 - **Manual drive-by** (SA's Manual Driveby Remake): in a vehicle with an SMG, L2 / R2 bring a camera over the vehicle to
   that side, the mouse aims within the window's arc and Circle fires at the dot.
 - **Field of view** of the game's own cameras, on foot and in vehicles (the car camera's widening at speed kept).
-- **Gun hold in first person**: by default as in third person - the body's own animation holds the gun (look down to
-  see it), and it comes up to the eye only while you aim (free aim's R1 / right mouse button), as in San Andreas with
-  the Immersive Weapons Pack. The UltimateFP viewmodel (arms and gun always in view) and the game's arms stay selectable.
+- **Gun hold in first person**: by default the viewmodel - both arms hold the gun in view as in San Andreas' first person
+  (right hand on the grip, left hand under the handguard, forearms from the bottom of the picture), the barrel's line
+  always running into the crosshair's dot (each gun model's bore measured; any pitch, yaw, while turning), lowered a
+  little until you aim. "As in third person" (the body's own animation holds the gun, up to the eye only while aiming)
+  and the game's arms stay selectable.
 - **Aim raise**: free-aiming a rifle, shotgun, SMG or heavy gun plays the game's own aim pose (the gun's fire anim held
   at its aim point, as a lock-on does), in third and first person; VCS kept it at the hip until fired.
 - **Walk while aiming**: free aim and the sniper / rocket views no longer root you: strafe facing the aim (the
@@ -63,7 +65,7 @@ Settings (F2, Game page; keys in `vcs.ini`):
 | `camera.fov_foot` / `camera.fov_vehicle` | Field of view: on foot / vehicles | 70 (50..110) |
 | `camera.free_aim` | Free aim (no lock-on) | off (`VCS_FREEAIM=0/1`) |
 | `camera.free_aim_fov` | Aim field of view | 60 (40..80) |
-| `camera.fp_hold` | Gun hold (first person) | As in third person (0); UltimateFP viewmodel (1); Game's arms (2) (`VCS_FP_HOLD`) |
+| `camera.fp_hold` | Gun hold (first person) | As in third person (0); Viewmodel, SA style (1, the default); Game's arms (2) (`VCS_FP_HOLD`) |
 | `camera.aim_raise` | Raise the gun while aiming | on (`VCS_AIM_RAISE`) |
 | `camera.fp_aim_eye` | Aiming brings the gun to the eye | on |
 | `camera.fp_sa_hands` | San Andreas hands on the gun | on |
@@ -72,7 +74,7 @@ Settings (F2, Game page; keys in `vcs.ini`):
 | `controls.firstperson_key` | Keyboard page > Menus > First person | B; on a gamepad Back + R3 |
 
 For tests: `VCS_FIRSTPERSON_HOOKS=0`, `VCS_FREEAIM_HOOKS=0`, `VCS_CARGLASS_HOOKS=0` hook nothing; the control channel
-(the port's `tools/rig.py`) gets `firstperson`, `freeaim`, `viewmodel`, `vmplace`, `aimwalk`, `saanims` and `carglass [0|1]` status commands. How the game's camera,
+(the port's `tools/rig.py`) gets `firstperson`, `freeaim`, `viewmodel`, `vmplace`, `vmbore`, `aimwalk`, `saanims` and `carglass [0|1]` status commands. How the game's camera,
 aim and vehicle drawing work: the port's docs/game-internals.md 12b - 12e, 12o.
 
 ### Project2DFX.asi - distant lights, stars, distant traffic
