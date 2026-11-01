@@ -189,7 +189,6 @@ reports and leaves the crosshair out if they differ.
 | `plugins/JoltPhysics/` | JoltPhysics.asi: `main.cpp` (the exports), `jolt.cpp` (ragdolls, bike falls, hit reactions, gore, pickups), `footik.cpp`, `jiggle.cpp`, `physics/ragdoll.cpp` (the only code that sees Jolt) |
 | `plugins/Project2DFX/` | Project2DFX.asi: `main.cpp` (the exports), `project2dfx.cpp`, `ps2_float.h` (the EE's float maths, copied from the runtime) |
 | `plugins/RenderHook/` | RenderHook.asi: `main.cpp` (the exports), `renderhook.cpp` (AO settings and passes), `temporal.cpp` (jitter, motion-vector views), `dlaa.cpp` (DLAA through NGX), `shadows.cpp` (sun shadows), `shaders/` |
-| `plugins/MeshSmooth/` | MeshSmooth.asi: `main.cpp` (the exports), `meshsmooth.cpp` (the refiner, its cache, settings) |
 | `plugins/VR/` | VR.asi: `main.cpp` (the exports, settings, the present hook: copies, layers, head look), `xr.cpp` (OpenXR: loader, session, spaces, swapchains, frames), `shaders/vr_blit.hlsl`, `test/` (xr_test_runtime) |
 | `third_party/imgui/` | Dear ImGui 1.92.7-docking (MIT), the sources the port builds |
 | `third_party/JoltPhysics/` | Jolt Physics 5.6.0 (MIT): `Jolt/` and `Build/` of the v5.6.0 tag, unmodified |
