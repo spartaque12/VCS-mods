@@ -44,7 +44,6 @@ namespace vcs::firstperson
         constexpr uint32_t kModeSniper = 7, kModeRocket = 8, kModeCamera = 46, kModeBinoculars = 47; // the game's own aims
         // in vehicles: 18 behind cars, bikes, helis and planes, 22 boats, 16 the game's own in-car view (Select)
         constexpr uint32_t kModeCar = 18, kModeBoat = 22, kModeInCar = 16;
-        constexpr uint32_t kCamOrientation = 0x7E8u; // TheCamera's heading the player's pad is read against
         constexpr uint32_t kCamLookDirection = 0x74u; // after the game's update: 0 behind, 1 left, 2 right, 3 ahead (L2 / R2)
         constexpr uint32_t kVehicleType = 0x354u;     // 6 bike, 8 BMX (lean matrix at +0x3C0), ...
         constexpr uint32_t kVehicleLeanMatrix = 0x3C0u, kVehicleMoveSpeed = 0x140u; // speed x 50 = m/s
@@ -167,7 +166,6 @@ namespace vcs::firstperson
         std::atomic<int> g_vrBody{0};
         constexpr int kVrNearCm = 5; // VR's near plane at most: a headset's eye is right at the joint
         constexpr float kVrHeadReach = 0.6f; // m: the head's offset kept within this (leaning, not walking)
-        float g_walkHeadYaw = 0.0f; // the head's yaw in this frame's view: taken out of the heading the player walks by
         std::atomic<uint32_t> g_headAppliedFrame{0}; // the game frame (CTimer::m_FrameCounter + 1) first person on foot last took the head look
 
         // for the control channel's "firstperson" (another thread)
@@ -717,7 +715,6 @@ namespace vcs::firstperson
             if (head)
             {
                 g_headAppliedFrame.store(rd32(ram, kFrameCounter) + 1u, std::memory_order_relaxed);
-                g_walkHeadYaw = headYaw;
                 g_pitch = 0.0f;
             }
             const float viewYaw = head ? wrap(g_yaw + headYaw) : g_yaw;
@@ -874,7 +871,7 @@ namespace vcs::firstperson
                 // the follow camera stands behind the view (heading beta = the view's + pi, its stand points turned
                 // with it about the player), so the player walks where he looks and the third-person view takes over
                 // from there
-                const float beta = std::fmod(g_yaw + kPi + kTwoPi, kTwoPi);
+                const float beta = std::fmod(viewYaw + kPi + kTwoPi, kTwoPi); // (VR: the head's view)
                 const float turn = wrap(beta - rdf(ram, cam + kCamBeta));
                 wrf(ram, cam + kCamBeta, beta);
                 const float c = std::cos(turn), s = std::sin(turn);
@@ -895,7 +892,7 @@ namespace vcs::firstperson
                 const bool idle = state == kPedStateIdle, attacking = state == kPedStateAttack || state == kPedStateFight;
                 if (idle || attacking)
                 {
-                    const float want = wrap(g_yaw - kPi / 2.0f); // heading of a ped facing the view
+                    const float want = wrap(viewYaw - kPi / 2.0f); // heading of a ped facing the view
                     const bool moving = std::fabs(pad.lx) > 0.1f || std::fabs(pad.ly) > 0.1f;
                     if (attacking || !moving || (!aiming && (pad.buttons & (kCircle | kR1))))
                     {
@@ -1073,6 +1070,43 @@ namespace vcs::firstperson
 
         // The frame's field of view, from CCamera::Process: the game's own on-foot and vehicle cameras scaled by their
         // settings (70 = the game's), ours (first person, the aim, the free camera) and every other camera left alone.
+        void headOnCamera(uint8_t *rdram)
+        {
+            const uint32_t frame = rd32(rdram, kFrameCounter);
+            if (g_headAppliedFrame.load(std::memory_order_relaxed) == frame + 1u)
+                return; // first person on foot has it
+            float hy, hp, hr, pos[3];
+            {
+                std::lock_guard<std::mutex> lock(g_headMutex);
+                if (!g_headOn)
+                    return;
+                hy = g_headYaw, hp = g_headPitch, hr = g_headRoll;
+                std::copy(g_headPos, g_headPos + 3, pos);
+            }
+            // TheCamera's matrix: rows left, forward, up, position
+            const float fx = rdf(rdram, kTheCamera + 0x10u), fy = rdf(rdram, kTheCamera + 0x14u), fz = rdf(rdram, kTheCamera + 0x18u);
+            if (!std::isfinite(fx + fy + fz) || fx * fx + fy * fy < 1e-6f)
+                return;
+            // the horizon kept level: the game camera's own tilt left out, the head alone pitches (as on foot)
+            const float yaw0 = std::atan2(fy, fx);
+            const float yaw = wrap(yaw0 + hy), pitch = std::clamp(hp, -1.55f, 1.55f);
+            const float cy = std::cos(yaw), sy = std::sin(yaw), cp = std::cos(pitch), sp = std::sin(pitch);
+            const float f[3] = {cp * cy, cp * sy, sp};
+            float u[3] = {-cy * sp, -sy * sp, cp}; // level, then rolled toward the view's right
+            const float right[3] = {sy, -cy, 0.0f}, cr = std::cos(hr), sr = std::sin(hr);
+            for (int i = 0; i < 3; ++i)
+                u[i] = u[i] * cr + right[i] * sr;
+            const float l[3] = {u[1] * f[2] - u[2] * f[1], u[2] * f[0] - u[0] * f[2], u[0] * f[1] - u[1] * f[0]};
+            const float c0 = std::cos(yaw0), s0 = std::sin(yaw0); // the head's movement in the camera's heading
+            const float p[3] = {rdf(rdram, kTheCamera + 0x30u) + s0 * pos[0] + c0 * pos[1],
+                                rdf(rdram, kTheCamera + 0x34u) - c0 * pos[0] + s0 * pos[1], rdf(rdram, kTheCamera + 0x38u) + pos[2]};
+            wrVec(rdram, kTheCamera + 0x00u, l[0], l[1], l[2]);
+            wrVec(rdram, kTheCamera + 0x10u, f[0], f[1], f[2]);
+            wrVec(rdram, kTheCamera + 0x20u, u[0], u[1], u[2]);
+            wrVec(rdram, kTheCamera + 0x30u, p[0], p[1], p[2]);
+            g_headAppliedFrame.store(frame + 1u, std::memory_order_relaxed);
+        }
+
         VCS_GUEST_CC void setFov(uint8_t *rdram, VcsGuestContext *ctx, void *runtime)
         {
             // first person: the frame's camera is its view, whatever CCamera::Process blended or shook (TheCamera's matrix:
@@ -1087,19 +1121,11 @@ namespace vcs::firstperson
                 wrVec(rdram, kTheCamera + 0x20u, u[0], u[1], u[2]);
                 wrVec(rdram, kTheCamera + 0x30u, g_fpView[0][0], g_fpView[0][1], g_fpView[0][2]);
             }
-            // VR: the player walks by the body's heading (mouse / stick), not the head's. CCamera::Process has just set
-            // the heading the pad is read against (+0x7E8, FUN_0037b2c8: atan2 of TheCamera's front x, y) from the
-            // view the head turned
-            if (mod::gpr32(ctx, 31) == kSetFovInCameraProcess && g_on && g_hideHead && !mod::freecamFlying() &&
-                g_headAppliedFrame.load(std::memory_order_relaxed) == rd32(rdram, kFrameCounter) + 1u)
-            {
-                const float fx = rdf(rdram, kTheCamera + 0x10u), fy = rdf(rdram, kTheCamera + 0x14u),
-                            o = rdf(rdram, kTheCamera + kCamOrientation);
-                // which way round the game's atan2 is: the heading against both (it may be turned by pi, looking back)
-                const auto off = [o](float a) { return std::min(std::fabs(wrap(o - a)), std::fabs(wrap(o - a - kPi))); };
-                const bool xy = off(std::atan2(fx, fy)) <= off(std::atan2(fy, fx)); // heading = pi/2 - yaw, else = yaw
-                wrf(rdram, kTheCamera + kCamOrientation, wrap(o + (xy ? g_walkHeadYaw : -g_walkHeadYaw)));
-            }
+            // VR everywhere else (vehicles, cutscenes, the game's own cameras): the frame's camera turned by the head -
+            // its heading plus the head's yaw, the head's pitch and roll (level horizon), moved with the head. (First
+            // person on foot took the head in its own view above.)
+            if (mod::gpr32(ctx, 31) == kSetFovInCameraProcess && !mod::freecamFlying())
+                headOnCamera(rdram);
             if (mod::gpr32(ctx, 31) == kSetFovInCameraProcess && !g_on && !mod::freecamFlying())
             {
                 const uint32_t mode = rd32(rdram, kCams + rdram[kActiveCam] * kCamSize + kCamMode) & 0xFFFFu;
