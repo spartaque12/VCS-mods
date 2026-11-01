@@ -52,6 +52,12 @@ namespace vcs::viewmodel
     // calls into the game (see above).
     void animate(uint8_t *ram, VcsGuestContext *ctx, void *runtime);
 
+    // Game thread: free aim's R1 aimed in one of the last two camera updates (the player, not locked on) - aimwalk.cpp.
+    bool aimingFreely(const uint8_t *ram);
+
+    // Game thread: the aim raise holds the gun's fire anim (free aim, a torso-aimed gun).
+    bool raised();
+
     // Install (CameraAim's): the game's anim functions the aim raise calls; false leaves it off.
     bool installAnims();
 }

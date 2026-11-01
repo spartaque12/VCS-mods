@@ -2,6 +2,7 @@
 #include "viewmodel.h"
 
 #include "mod.h"
+#include "aimwalk.h"
 #include "reload.h"
 
 #include <algorithm>
@@ -96,6 +97,7 @@ namespace vcs::viewmodel
         bool g_raised = false;      // the fire anim is ours (held at its aim point)
         uint32_t g_raisedPed = 0;
         uint32_t g_raiseCount = 0;  // status: anims started
+        uint32_t g_assocDbg = 0;    // status: the held fire anim's association
         std::atomic<int> g_offsetCm[3] = {{0}, {0}, {0}}; // right, ahead, up
         std::atomic<int> g_swayPct{100};
 
@@ -496,9 +498,9 @@ namespace vcs::viewmodel
             }
             char text[600];
             std::snprintf(text, sizeof(text),
-                          "ok hold=%d aimraise=%d raised=%d raises=%u enabled=%d active=%d type=%d blend=%.2f ref=%.3f,%.3f,%.3f hand=%.3f,%.3f,%.3f barrel=%.4f pull=%.3f "
+                          "ok hold=%d aimraise=%d raised=%d raises=%u assoc=%08x enabled=%d active=%d type=%d blend=%.2f ref=%.3f,%.3f,%.3f hand=%.3f,%.3f,%.3f barrel=%.4f pull=%.3f "
                           "ads=%.2f reload=%.2f sway=%.3f,%.3f applied=%u ax=%.2f,%.2f,%.2f ay=%.2f,%.2f,%.2f az=%.2f,%.2f,%.2f",
-                          g_hold.load(), g_aimRaise ? 1 : 0, g_raised ? 1 : 0, g_raiseCount, g_enabled ? 1 : 0, st.active ? 1 : 0, st.type, st.blend, st.ref[0], st.ref[1], st.ref[2], st.hand[0],
+                          g_hold.load(), g_aimRaise ? 1 : 0, g_raised ? 1 : 0, g_raiseCount, g_assocDbg, g_enabled ? 1 : 0, st.active ? 1 : 0, st.type, st.blend, st.ref[0], st.ref[1], st.ref[2], st.hand[0],
                           st.hand[1], st.hand[2], st.barrel, g_pull, g_ads, g_reload, st.sway[0], st.sway[1], st.applied, st.axes[0][0], st.axes[0][1], st.axes[0][2],
                           st.axes[1][0], st.axes[1][1], st.axes[1][2], st.axes[2][0], st.axes[2][1], st.axes[2][2]);
             reply(text);
@@ -1020,6 +1022,11 @@ namespace vcs::viewmodel
                         ++g_raiseCount;
                     }
                 }
+                g_assocDbg = assoc;
+                // walking while aiming (aimwalk.h): its flag 0x20 lets the walk / run anims move him under it (without it the
+                // held fire anim keeps him standing - VCS's rule for the torso-aimed guns)
+                if (assoc && aimwalk::enabled())
+                    wr32(ram, assoc + kAssocFlags, rd32(ram, assoc + kAssocFlags) | 0x20u);
                 if (assoc)
                     callGuest(g_pointGunAt, kPointGunAt, ram, ctx, runtime, {ped}); // held at the aim point
             }
@@ -1036,6 +1043,14 @@ namespace vcs::viewmodel
             if (const uint32_t c = rd32(ram, p + kPedClump))
                 blendOut(ram, callGuest(g_getAssociation, kGetAssociation, ram, ctx, runtime, {p, c, kAnimFire}));
         g_raisedPed = 0;
+    }
+
+    bool raised() { return g_raised; }
+
+    bool aimingFreely(const uint8_t *ram)
+    {
+        const AimWant w = g_aimWant;
+        return w.ped && w.aiming && !w.lockedOn && rd32(ram, kFrameCounter) - w.frame <= 2u;
     }
 
     bool installAnims()

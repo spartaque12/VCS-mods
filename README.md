@@ -44,6 +44,8 @@ The camera and aiming mods of the port, together because they share one camera h
   the Immersive Weapons Pack. The UltimateFP viewmodel (arms and gun always in view) and the game's arms stay selectable.
 - **Aim raise**: free-aiming a rifle, shotgun, SMG or heavy gun plays the game's own aim pose (the gun's fire anim held
   at its aim point, as a lock-on does), in third and first person; VCS kept it at the hip until fired.
+- **Walk while aiming**: free aim and the sniper / rocket views no longer root you: strafe facing the aim (the
+  game's own walk / run left, right, back), the aim pose and the dot steady.
 - **San Andreas armed anims**: VCS's resident IDLE / WALK / run_armed and WALK_start_armed get the upper body of SA's
   stock `ped.ifp` ones (rewritten in place in memory; root, pelvis, spine and legs stay VCS's). Needs
   `mods\anims\sa_armed.bin` made from your own GTA SA by `plugins/CameraAim/tools/sa_armed_anims.py "<GTA SA>\anim\ped.ifp"`
@@ -64,11 +66,13 @@ Settings (F2, Game page; keys in `vcs.ini`):
 | `camera.fp_hold` | Gun hold (first person) | As in third person (0); UltimateFP viewmodel (1); Game's arms (2) (`VCS_FP_HOLD`) |
 | `camera.aim_raise` | Raise the gun while aiming | on (`VCS_AIM_RAISE`) |
 | `camera.fp_aim_eye` | Aiming brings the gun to the eye | on |
+| `camera.fp_sa_hands` | San Andreas hands on the gun | on |
+| `camera.aim_walk` | Walk while aiming | on (`VCS_AIM_WALK`) |
 | `anims.sa_armed` | San Andreas armed anims | on, with the file (`VCS_SA_ARMED_ANIMS`) |
 | `controls.firstperson_key` | Keyboard page > Menus > First person | B; on a gamepad Back + R3 |
 
 For tests: `VCS_FIRSTPERSON_HOOKS=0`, `VCS_FREEAIM_HOOKS=0`, `VCS_CARGLASS_HOOKS=0` hook nothing; the control channel
-(the port's `tools/rig.py`) gets `firstperson`, `freeaim`, `viewmodel`, `saanims` and `carglass [0|1]` status commands. How the game's camera,
+(the port's `tools/rig.py`) gets `firstperson`, `freeaim`, `viewmodel`, `vmplace`, `aimwalk`, `saanims` and `carglass [0|1]` status commands. How the game's camera,
 aim and vehicle drawing work: the port's docs/game-internals.md 12b - 12e, 12o.
 
 ### Project2DFX.asi - distant lights, stars, distant traffic

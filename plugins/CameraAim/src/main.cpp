@@ -6,6 +6,7 @@
 #include "carglass.h"
 #include "firstperson.h"
 #include "freeaim.h"
+#include "aimwalk.h"
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -62,6 +63,7 @@ extern "C"
         // the Game page: "First person", "Field of view", "Free aim" (where they were in vcs.exe)
         vcs::firstperson::registerSettings();
         vcs::freeaim::registerSettings();
+    vcs::aimwalk::registerSettings();
 
         // the mouse / right stick turn our view (game/vcs_input.cpp asks every pad read)
         const VcsModLookHandler lookHandler = {&lookActive, &look, nullptr};
@@ -105,6 +107,7 @@ extern "C"
     VCS_MOD_EXPORT int VcsModInstallLate(const VcsModApi *)
     {
         vcs::freeaim::install();
+    vcs::aimwalk::install();
         vcs::carglass::install();
         return 1;
     }

@@ -3,6 +3,7 @@
 
 #include "carglass.h"
 #include "freeaim.h"
+#include "aimwalk.h"
 #include "mod.h"
 #include "reload.h"
 #include "saanims.h"
@@ -1047,6 +1048,7 @@ namespace vcs::firstperson
                     // VR: the body's bones collapsed (scale 0 at their joints) except what camera.vr_body keeps
                     const bool vr = g_hideHead && headLookApplied();
                     const int vrBody = g_vrBody.load(std::memory_order_relaxed);
+                    aimwalk::applyBones(rdram, ped, bones); // the aim pose over the walk (aimwalk.h)
                     if (!vr || vrBody == 1)
                         viewmodel::apply(rdram, ped, bones); // first person: the arms and gun in view (viewmodel.h)
                     if (vr && vrBody != 2)
