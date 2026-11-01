@@ -148,6 +148,14 @@ older one refuses the mod with a log line.
   Settings (Graphics, "Lighting (RenderHook)"): `renderhook.shadows` Off / Soft / Normal / Dark (`VCS_RH_SHADOWS`),
   `renderhook.shadow_distance` 50-400 m, `renderhook.shadow_quality` 1024 / 2048 / 4096; `VCS_RH_SHADOW_VIEW=1` or the
   control command `rhshadow view 1` shows them alone. Needs a `vcs.exe` with `render_shadow_map` (2026-11-01 on).
+- **Water**: the game's sea redrawn at its own hook points (before / after the game's water draws): animated waves,
+  depth tint over the seabed, screen-space reflections of the world with a sky fallback, sun glitter and sun path from
+  the game's timecycle sun; shore waves running up the beaches, shore foam, caustics on the seabed and in pools; and
+  interactive wakes and ripples (a height-field simulation around the camera, disturbed by boats, swimmers, things
+  falling in and explosions). Settings (Graphics, "Water (RenderHook)"): `renderhook.water`, `renderhook.water_reflections`,
+  `renderhook.water_glitter`, `renderhook.shore_foam`, `renderhook.shore_waves`, `renderhook.caustics`, `renderhook.wakes`
+  (all off by default); control commands `rhwater`, `rhshore`, `rhwake`. Needs a `vcs.exe` with the water hook points
+  (`VCS_RENDER_BEFORE_WATER` / `AFTER_WATER`, 2026-11-01 on). A clean-room implementation of standard techniques.
 - **Blob shadows**: the game's round shadows under peds, cars and bikes are hidden while AO or sun shadows are on
   (`renderhook.blob_shadows` Auto / Shown / Hidden, `VCS_RH_BLOB_SHADOWS`; a hook on `CShadows::StoreShadowToBeRendered`).
 - **DLAA** (NVIDIA DLSS at native resolution): the picture after the AO, the game's depth and its motion vectors (the

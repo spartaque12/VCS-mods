@@ -202,7 +202,16 @@ enum
 {
     /* the 3D scene is drawn - sky, world, water, peds, vehicles, blob shadows, particles - and the game's post effects
      * (bloom, trails, motion blur) and the HUD come next */
-    VCS_RENDER_BEFORE_POST = 1
+    VCS_RENDER_BEFORE_POST = 1,
+    /* -- appended 2026-11-01 (an older vcs.exe refuses these points: add_render_hook returns 0) -- around the game's
+     * water (game-internals.md 6p), drawn after the world and before the sky's self-copy, the reflection map, peds and
+     * vehicles. BEFORE_WATER: right before
+     * the first water draw - the picture and Z buffer hold the world without the water (copy what you need: the seabed
+     * for refraction, its depth). AFTER_WATER: right after the last - the water drawn and in the Z buffer (where the Z
+     * buffer is nearer than before, water is in front); water_rect bounds it. A frame without water runs neither; a frame
+     * may run both more than once (each run of water draws). No velocity, reprojection or shadow maps at these points. */
+    VCS_RENDER_BEFORE_WATER = 2,
+    VCS_RENDER_AFTER_WATER = 3
 };
 /* What a hook reads (add_render_hook's flags). */
 enum
@@ -258,6 +267,13 @@ typedef struct VcsRenderFrame
      * differences between frames, e.g. snapping shadow maps to the world. */
     int position_valid;
     float camera_position[3];
+    /* -- appended 2026-11-01 (check size >= offsetof(VcsRenderFrame, water_color) + sizeof(water_color)) -- the hook point
+     * this call is for (VCS_RENDER_*), and at VCS_RENDER_AFTER_WATER the water draws' bounds in target pixels (x0, y0,
+     * x1, y1; exclusive ends, clamped to width x height), and at both water points the first water draw's vertex colour
+     * (RGBA, 1.0 = the PS2's 0x80): the timecycle's water tint the game multiplies its water texture by. */
+    int point;
+    int water_rect[4];
+    float water_color[4];
 } VcsRenderFrame;
 
 typedef void (*VcsRenderHookFn)(void *user, const VcsRenderFrame *frame);

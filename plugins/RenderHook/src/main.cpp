@@ -3,6 +3,9 @@
 #include "mod.h"
 
 #include "renderhook.h"
+#include "water.h"
+#include "water_sim.h"
+#include "water_shore.h" // stage 2
 
 #include <cstring>
 
@@ -26,6 +29,9 @@ extern "C"
         vcs::renderhook::registerTemporal();
         vcs::renderhook::registerShadows();
         vcs::renderhook::registerDlaa();
+        vcs::renderhook::registerWater();
+        vcs::renderhook::registerWakes(); // stage 3
+        vcs::renderhook::registerShore(); // stage 2
         return 1;
     }
 
@@ -33,6 +39,7 @@ extern "C"
     VCS_MOD_EXPORT int VcsModInstall(const VcsModApi *)
     {
         vcs::renderhook::installBlobs();
+        vcs::renderhook::installWakes(); // stage 3
         return 1;
     }
 
@@ -45,6 +52,9 @@ extern "C"
             vcs::renderhook::registerShadowSettings();
             vcs::renderhook::registerBlobSettings();
             vcs::renderhook::registerDlaaSettings();
+            vcs::renderhook::registerWaterSettings(); // section "Water (RenderHook)": the surface first
+            vcs::renderhook::registerWakeSettings();  // stage 3
+            vcs::renderhook::registerShoreSettings(); // stage 2
         }
         return 1;
     }
