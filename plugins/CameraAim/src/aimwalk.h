@@ -11,6 +11,9 @@
 //   eased in / out over 0.15 s - the gun stays on the dot.
 // - The sniper / rocket views (state 0xC): after the scope's own control (FUN_00233FF0 / FUN_00233C80) the run-around
 //   (FUN_002339D0) runs too, so he walks under the scope.
+// - Every direction (2026-11-02): inside the run-around the stick (CPad::GetPedWalkLeftRight / UpDown) comes straight
+//   from the pad, held to the Walk key's speed unless sprint (Cross / Shift) is held; its anims have no side step at 90
+//   degrees (A / D ran ahead), so CPhysical::ApplyMoveSpeed gets the player's move speed turned to the stick's direction.
 #pragma once
 
 #include <cstdint>

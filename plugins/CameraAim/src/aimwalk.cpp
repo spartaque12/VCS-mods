@@ -69,6 +69,100 @@ namespace vcs::aimwalk
             return g_origMouseCam(rdram, ctx, runtime);
         }
 
+        // The run-around's stick (CPad::GetPedWalkLeftRight FUN_00285690 / UpDown FUN_002857E8, -128..128) while it runs for
+        // the aim: from the pad as the port sends it, without the game's averaging. Pure left / right (up-down 0) made it
+        // run ahead - its anim choice has no 90 degree case - so up-down gets a nudge of 2 (under a degree off). Aiming
+        // walks: the stick is held to the Walk key's speed (keys.walk_speed) unless sprint (Cross / Shift) is held.
+        constexpr uint32_t kWalkLeftRight = 0x00285690u, kWalkUpDown = 0x002857E8u;
+        constexpr uint16_t kCross = 0x4000;
+        VcsGuestFn g_origLeftRight = nullptr, g_origUpDown = nullptr, g_origRunAroundHook = nullptr;
+        bool g_inRunAround = false;
+        uint32_t g_runAroundFrame = 0; // the frame the run-around last ran for the aim
+
+        void aimStick(float &x, float &y)
+        {
+            const mod::PadState pad = mod::lastPad();
+            x = pad.lx;
+            y = pad.ly;
+            const float mag = std::sqrt(x * x + y * y);
+            if (mag < 0.1f)
+            {
+                x = y = 0.0f;
+                return;
+            }
+            if (!(pad.buttons & kCross))
+            {
+                const int pct = mod::api->setting_value ? mod::api->setting_value("keys.walk_speed") : 45;
+                const float walk = std::clamp(pct > 0 ? pct / 100.0f : 0.45f, 0.2f, 1.0f);
+                if (mag > walk)
+                {
+                    x *= walk / mag;
+                    y *= walk / mag;
+                }
+            }
+            if (std::fabs(y) * 128.0f < 2.0f)
+                y = 2.0f / 128.0f;
+        }
+        VCS_GUEST_CC void walkLeftRight(uint8_t *rdram, VcsGuestContext *ctx, void *runtime)
+        {
+            if (!g_inRunAround)
+                return g_origLeftRight(rdram, ctx, runtime);
+            float x, y;
+            aimStick(x, y);
+            mod::setGpr32(ctx, 2, static_cast<uint32_t>(static_cast<int32_t>(std::lround(x * 128.0f))));
+            mod::setPc(ctx, mod::gpr32(ctx, 31));
+        }
+        VCS_GUEST_CC void walkUpDown(uint8_t *rdram, VcsGuestContext *ctx, void *runtime)
+        {
+            if (!g_inRunAround)
+                return g_origUpDown(rdram, ctx, runtime);
+            float x, y;
+            aimStick(x, y);
+            mod::setGpr32(ctx, 2, static_cast<uint32_t>(static_cast<int32_t>(std::lround(y * 128.0f))));
+            mod::setPc(ctx, mod::gpr32(ctx, 31));
+        }
+        // the run-around itself (also from the scopes, below): the stick above while it runs for the aim
+        VCS_GUEST_CC void runAroundHook(uint8_t *rdram, VcsGuestContext *ctx, void *runtime)
+        {
+            const uint32_t ped = mod::gpr32(ctx, 4);
+            g_inRunAround = ped && ped == rd32(rdram, kPlayerPed) && aiming(rdram);
+            if (g_inRunAround)
+                g_runAroundFrame = rd32(rdram, 0x004CD124u);
+            g_origRunAroundHook(rdram, ctx, runtime);
+            g_inRunAround = false;
+        }
+        // CPhysical::ApplyMoveSpeed (FUN_00348098, a0 the entity: position += speed x step): the run-around's anims
+        // move him ahead for a pure left / right stick (no side step at 90 degrees), so while the aim walks the player's
+        // horizontal move speed is turned to the stick's direction in the body's frame (the body faces the aim), its size
+        // kept - every direction moves where it is pushed.
+        constexpr uint32_t kApplyMoveSpeed = 0x00348098u, kPedRotation = 0x8E0u, kPedMoveSpeedX = 0x140u;
+        VcsGuestFn g_origApplyMove = nullptr;
+        std::atomic<uint32_t> g_steered{0};
+        VCS_GUEST_CC void applyMoveSpeed(uint8_t *rdram, VcsGuestContext *ctx, void *runtime)
+        {
+            const uint32_t ent = mod::gpr32(ctx, 4);
+            if (ent && ent == rd32(rdram, kPlayerPed) && rd32(rdram, 0x004CD124u) - g_runAroundFrame <= 1u && aiming(rdram))
+            {
+                float x, y;
+                aimStick(x, y);
+                float v[2];
+                std::memcpy(v, rdram + ((ent + kPedMoveSpeedX) & kRamMask), 8);
+                const float speed = std::sqrt(v[0] * v[0] + v[1] * v[1]), mag = std::sqrt(x * x + y * y);
+                if (speed > 1e-4f && mag > 0.05f)
+                {
+                    float h;
+                    std::memcpy(&h, rdram + ((ent + kPedRotation) & kRamMask), 4);
+                    const float fwd[2] = {-std::sin(h), std::cos(h)}, right[2] = {std::cos(h), std::sin(h)};
+                    const float ax = x / mag, ay = -y / mag; // right, ahead
+                    const float d[2] = {right[0] * ax + fwd[0] * ay, right[1] * ax + fwd[1] * ay};
+                    v[0] = d[0] * speed;
+                    v[1] = d[1] * speed;
+                    std::memcpy(rdram + ((ent + kPedMoveSpeedX) & kRamMask), v, 8);
+                    ++g_steered;
+                }
+            }
+            return g_origApplyMove(rdram, ctx, runtime);
+        }
         // a call into the game from a hook's entry (registers and pc put back)
         void callGuest(VcsGuestFn fn, uint32_t address, uint8_t *rdram, VcsGuestContext *ctx, void *runtime, uint32_t a0, uint32_t a1)
         {
@@ -263,7 +357,19 @@ namespace vcs::aimwalk
         mod::api->replace_function(kUsing3rdPersonMouseCam, &mouseCam);
         g_origSniper = mod::api->lookup_function(kSniperControl);
         g_origRocket = mod::api->lookup_function(kRocketControl);
-        g_runAround = mod::api->lookup_function(kRunAround);
+        g_origLeftRight = mod::api->lookup_function(kWalkLeftRight);
+        g_origUpDown = mod::api->lookup_function(kWalkUpDown);
+        g_origRunAroundHook = mod::api->lookup_function(kRunAround);
+        if (g_origLeftRight && g_origUpDown && g_origRunAroundHook)
+        {
+            mod::api->replace_function(kWalkLeftRight, &walkLeftRight);
+            mod::api->replace_function(kWalkUpDown, &walkUpDown);
+            mod::api->replace_function(kRunAround, &runAroundHook);
+        }
+        g_runAround = mod::api->lookup_function(kRunAround); // (the hook above, for the scopes' call)
+        g_origApplyMove = mod::api->lookup_function(kApplyMoveSpeed);
+        if (g_origApplyMove)
+            mod::api->replace_function(kApplyMoveSpeed, &applyMoveSpeed);
         if (g_origSniper && g_origRocket && g_runAround)
         {
             mod::api->replace_function(kSniperControl, &sniperControl);
@@ -271,8 +377,8 @@ namespace vcs::aimwalk
         }
         mod::addCommand("aimwalk", [](const std::string &, mod::Reply reply) {
             char text[160];
-            std::snprintf(text, sizeof(text), "ok on=%d strafe=%u scope=%u kept=%u pose=%d", g_on ? 1 : 0, g_strafe.load(),
-                          g_scope.load(), g_kept.load(), g_poseValid ? 1 : 0);
+            std::snprintf(text, sizeof(text), "ok on=%d strafe=%u scope=%u steered=%u kept=%u pose=%d", g_on ? 1 : 0, g_strafe.load(), g_scope.load(), g_steered.load(),
+                          g_kept.load(), g_poseValid ? 1 : 0);
             reply(text);
         });
     }
