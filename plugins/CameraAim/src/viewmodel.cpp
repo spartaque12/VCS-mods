@@ -75,8 +75,8 @@ namespace vcs::viewmodel
             kHoldViewmodel = 1, // UltimateFP's viewmodel (this file's IK)
             kHoldGame = 2,      // the game's arms, nothing moved
         };
-        std::atomic<int> g_hold{kHoldViewmodel};
-        std::atomic<bool> g_enabled{true}; // the viewmodel (g_hold == kHoldViewmodel)
+        std::atomic<int> g_hold{kHoldBody};
+        std::atomic<bool> g_enabled{false}; // the viewmodel all the time (g_hold == kHoldViewmodel)
         std::atomic<bool> g_aimRaise{true}; // camera.aim_raise
 
         // the aim raise (game-internals.md 12d / 12w): the game's anim calls
@@ -451,15 +451,15 @@ namespace vcs::viewmodel
         s.page = "Game";
         s.section = "First person";
         s.label = "Gun hold";
-        s.help = "How first person holds a gun. Viewmodel (the default): both arms hold the gun in view at the lower right as "
-                 "in San Andreas' first person - right hand on the grip, left hand under the handguard, forearms from the "
-                 "bottom of the picture - its barrel always running into the crosshair's dot, lowered a little until you "
-                 "aim, swaying and bobbing (the gun position / sway rows). As in third person: the body's own animation "
-                 "holds it - exactly what third person shows (look down to see it) - and it comes up only while you aim "
-                 "(right mouse button / R1). Game's arms: nothing moved.";
+        s.help = "How first person holds a gun. As in third person (the default): the body's own animation holds it - the "
+                 "same walk, run and idle third person shows (San Andreas' armed anims) - and only while you aim (right "
+                 "mouse button / R1) the viewmodel eases in: both arms hold the gun in view as in San Andreas' first "
+                 "person, its barrel on the crosshair's dot (the per-gun position / roll rows). Viewmodel: the same arms "
+                 "and gun in view all the time, lowered a little until you aim, swaying and bobbing. Game's arms: nothing "
+                 "moved.";
         s.type = Type::Choice;
         s.choices = {{"As in third person", kHoldBody}, {"Viewmodel (SA style)", kHoldViewmodel}, {"Game's arms", kHoldGame}};
-        s.defaultValue = kHoldViewmodel;
+        s.defaultValue = kHoldBody;
         s.env = "VCS_FP_HOLD";
         s.onChange = [](int v) {
             g_hold = std::clamp(v, 0, 2);

@@ -16,10 +16,10 @@
 // the view; the shots are the game's (free aim's line hook still puts them on the camera's line). Eased in and out over
 // 0.15 s (states other than idle / attack / fight / aim: jumping, entering a car).
 //
-// That viewmodel is one of three first-person holds (camera.fp_hold, VCS_FP_HOLD): the viewmodel above (the default again
-// since 2026-11-02, the user's choice), "as in third person" (the body's own anim holds the gun - the same pose third
-// person shows, nothing moved - and the gun comes up only while aiming, through the game's own aim below), or the game's
-// arms untouched.
+// That viewmodel is one of three first-person holds (camera.fp_hold, VCS_FP_HOLD): "as in third person" (the default,
+// the user's choice 2026-11-02: the body's own anim holds the gun - the same walk / run / idle third person shows - and
+// only while aiming the viewmodel's pose above eases in over it, camera.fp_aim_eye), the viewmodel all the time, or the
+// game's arms untouched.
 //
 // The aim raise (camera.aim_raise, third and first person): free aim's R1 with a gun the torso aims (not the arm-aimed
 // Colt45 / Tec9 / silenced Ingram, which come up by themselves) plays the gun's fire anim held at its aim point - what
