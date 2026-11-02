@@ -54,7 +54,7 @@ namespace vcs::viewmodel
         // at rest (not aiming): the hand lower and back, the barrel still on the dot; raised while R1 / the right mouse
         // button aims or the gun fires, eased like UltimateFP's ADS (200 ms up, 180 ms down)
         constexpr float kRestOffset[3] = {0.0f, -0.03f, -0.04f}; // m
-        constexpr float kReloadOffset[3] = {-0.04f, -0.02f, -0.025f}, kReloadPitch = -0.12f, kReloadRoll = 0.7f; // m, rad
+        constexpr float kReloadOffset[3] = {-0.06f, -0.04f, 0.07f}, kReloadPitch = 0.25f, kReloadRoll = 0.7f; // m, rad
         constexpr float kReloadEase = 0.15f; // s
         constexpr float kAdsUp = 0.20f, kAdsDown = 0.18f, kAdsUpFiring = 0.08f;                          // s
         constexpr float kRecoilBack = 0.04f, kRecoilUp = 0.012f, kRecoilTurn = 0.10f, kRecoilTime = 0.07f; // m, m, rad, s
@@ -664,8 +664,11 @@ namespace vcs::viewmodel
         // hold otherwise
         g_body = g_hold.load(std::memory_order_relaxed) == kHoldBody && g_fpAimEye.load(std::memory_order_relaxed);
         const bool armed = first && ped && held(type) && armsState(rd32(ram, ped + kPedState));
+        // (as in third person: also while reloading - the body's reload anim is below the picture, the viewmodel's
+        // reload pose shows it, the user's "I don't see the reload anim")
+        const bool reloadingAny = armed && (reload::reloading(ram, ped) || g_reload > 0.0f);
         const bool want = armed && (g_enabled.load(std::memory_order_relaxed) ||
-                                    (g_body && (aiming || lockedOn || g_ads > 0.0f)));
+                                    (g_body && (aiming || lockedOn || g_ads > 0.0f || reloadingAny)));
         g_dt = std::clamp(rdf(ram, kTimeStep), 0.0f, 3.0f) / 50.0f;
         g_blend = std::clamp(g_blend + (want ? 1.0f : -1.0f) * g_dt / kBlendTime, 0.0f, 1.0f);
         g_active = (want || g_blend > 0.0f) && ped && held(type) && first;
@@ -1114,8 +1117,8 @@ namespace vcs::viewmodel
         }
 
         float w =g_blend * g_blend * (3.0f - 2.0f * g_blend);
-        if (g_body)
-            w *= g_ads * g_ads * (3.0f - 2.0f * g_ads);
+        if (g_body) // the aim's share, or the reload's (its pose lowered and tipped toward the left hand)
+            w *= std::max(g_ads * g_ads * (3.0f - 2.0f * g_ads), g_reload * g_reload * (3.0f - 2.0f * g_reload));
         for (uint32_t i = 0; i < 5; ++i)
         {
             writeBone(ram, bones, 12 + i, origRight[i], right[i], w);

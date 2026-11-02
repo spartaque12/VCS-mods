@@ -31,6 +31,8 @@ namespace vcs::firstperson
         constexpr uint32_t kPedVehicle = 0x480u;       // the vehicle it is in (0 on foot)
         constexpr uint32_t kPedRotationCur = 0x8E0u, kPedRotationDest = 0x8E4u; // heading = atan2(-forward.x, forward.y)
         constexpr uint32_t kPedState = 0x8C4u, kPedStateIdle = 1, kPedStateAttack = 0x10, kPedStateFight = 0x11; // VC's
+        constexpr uint32_t kPedStateDying = 0x39u; // dying (0x39), dead (0x3A) and after: the game's cameras (12d)
+        uint32_t g_loggedMode = 0; // the last other camera mode first person was kept in (logged once)
         constexpr uint32_t kFrameCounter = 0x004CD124u; // CTimer::m_FrameCounter
         constexpr uint32_t kTimeStep = 0x004CD110u;     // CTimer::ms_fTimeStep (1.0 = 1/50 s)
 
@@ -654,8 +656,20 @@ namespace vcs::firstperson
             // first person on foot - and while getting in or out of a vehicle: the ped has it (+0x480) from the start of
             // the enter anim to the end of the exit anim, the game's follow camera (mode 4) still on (game-internals.md 12t)
             const bool ragdoll = g_enabled && ped && rd32(ram, ped + kPedVehicle) == 0 && playerRagdoll();
+            // (on foot any other camera of the game's own - not a script's (TheCamera + 0x888), not the scopes or
+            // the in-vehicle modes, not while he dies or is arrested: the melee finishers on a downed ped switch to a
+            // camera of their own, which took first person away - the user's "executions disable first person")
+            const uint32_t pedState = ped ? rd32(ram, ped + kPedState) : 0;
+            const bool otherOnFoot = onFoot && mode != kModeFollowPed && mode != kModeLockOn && mode != 0 &&
+                                     mode != kModeCar && mode != kModeBoat && mode != kModeInCar && mode != 34 && mode != 45 &&
+                                     pedState < kPedStateDying;
+            if (otherOnFoot && g_enabled && mode != g_loggedMode)
+            {
+                g_loggedMode = mode;
+                mod::log("[firstperson] kept in camera mode %u (player state 0x%x)\n", mode, pedState);
+            }
             const bool first = g_enabled && ped && rd32(ram, kLooksAtPlayer) == 1 &&
-                               (mode == kModeFollowPed || mode == kModeLockOn || ragdoll);
+                               (mode == kModeFollowPed || mode == kModeLockOn || ragdoll || otherOnFoot);
             // free aim (freeaim.h): R1 with a gun, the game's follow camera behind the player
             const bool aiming = onFoot && mode == kModeFollowPed && freeaim::wantsAim(ram, ped);
             const float step = std::clamp(rdf(ram, kTimeStep), 0.0f, 3.0f) / (50.0f * kAimBlendSeconds);
