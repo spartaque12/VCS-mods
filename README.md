@@ -67,7 +67,7 @@ Settings (F2, Game page; keys in `vcs.ini`):
 | `camera.free_aim` | Free aim (no lock-on) | off (`VCS_FREEAIM=0/1`) |
 | `camera.free_aim_fov` | Aim field of view | 60 (40..80) |
 | `camera.fp_hold` | Gun hold (first person) | As in third person, the viewmodel only while aiming (0, the default); Viewmodel all the time, SA style (1); Game's arms (2) (`VCS_FP_HOLD`) |
-| `camera.vm_<kind>_right` / `_ahead` / `_up` / `_roll` | Pistols / SMGs / Rifles / Shotguns / Heavy guns: right (x), ahead (y), up (z), roll (w) | the viewmodel's right hand per kind of gun (`pistol`, `smg`, `rifle`, `shotgun`, `heavy`), cm from the eyes (17 / 36 / -22; heavy 30 / 40 / -24) and the roll about the barrel in degrees (0); the barrel stays on the dot whatever they are |
+| `camera.vm_<kind>_right` / `_ahead` / `_up` / `_roll` | Pistols / SMGs / Rifles / Shotguns / Heavy guns: right (x), ahead (y), up (z), roll (w) | the viewmodel's right hand per kind of gun (`pistol`, `smg`, `rifle`, `shotgun`, `heavy`), cm from the eyes (pistols 17 / 36 / -22, SMGs / rifles / shotguns 15 / 36 / -26, heavy 30 / 40 / -24) and the roll about the barrel in degrees (0); the barrel stays on the dot whatever they are |
 | `camera.vm_reset` | Reset the gun positions | a button: every kind's place and roll back to the defaults |
 | `camera.aim_raise` | Raise the gun while aiming | on (`VCS_AIM_RAISE`) |
 | `camera.fp_aim_eye` | Aiming brings the gun to the eye | on |

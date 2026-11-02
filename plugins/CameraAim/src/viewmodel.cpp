@@ -284,9 +284,9 @@ namespace vcs::viewmodel
         };
         constexpr SaPlace kSaPlaces[kClassCount] = {
             {0.17f, 0.36f, -0.22f, kConverge, {0.04f, 0.42f, -0.62f}, {0.24f, 0.05f, -0.40f}}, // pistols
-            {0.17f, 0.36f, -0.22f, kConverge, {0.04f, 0.42f, -0.62f}, {0.24f, 0.05f, -0.40f}}, // SMGs
-            {0.17f, 0.36f, -0.22f, kConverge, {0.04f, 0.42f, -0.62f}, {0.24f, 0.05f, -0.40f}}, // rifles
-            {0.17f, 0.36f, -0.22f, kConverge, {0.04f, 0.42f, -0.62f}, {0.24f, 0.05f, -0.40f}}, // shotguns
+            {0.15f, 0.36f, -0.26f, kConverge, {0.04f, 0.42f, -0.62f}, {0.24f, 0.05f, -0.40f}}, // SMGs
+            {0.15f, 0.36f, -0.26f, kConverge, {0.04f, 0.42f, -0.62f}, {0.24f, 0.05f, -0.40f}}, // rifles
+            {0.15f, 0.36f, -0.26f, kConverge, {0.04f, 0.42f, -0.62f}, {0.24f, 0.05f, -0.40f}}, // shotguns
             {0.30f, 0.40f, -0.24f, kConverge, {0.08f, 0.45f, -0.65f}, {0.30f, 0.08f, -0.40f}}, // heavy
         };
         GunClass gunClass(int type)
@@ -312,7 +312,7 @@ namespace vcs::viewmodel
         // the settings: the right hand's place (cm: right, ahead, up of the eyes) and the gun's roll about its barrel
         // (degrees, + its top to the right) - the barrel stays parallel to the view whatever they are, so on the dot
         std::atomic<int> g_classPlace[kClassCount][4] = {
-            {{17}, {36}, {-22}, {0}}, {{17}, {36}, {-22}, {0}}, {{17}, {36}, {-22}, {0}}, {{17}, {36}, {-22}, {0}}, {{30}, {40}, {-24}, {0}}};
+            {{17}, {36}, {-22}, {0}}, {{15}, {36}, {-26}, {0}}, {{15}, {36}, {-26}, {0}}, {{15}, {36}, {-26}, {0}}, {{30}, {40}, {-24}, {0}}};
         // The bore's direction in the hand's frame (x the hand's barrel axis, y left, z up: the tangents of its turn left
         // and up) - the converted SA models are not drawn with the bore exactly along the hand's x (SA's anims point them):
         // measured on screenshots per gun, so the drawn barrel's line runs into the dot (game-internals.md 12t)
