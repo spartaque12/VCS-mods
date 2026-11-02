@@ -18,6 +18,8 @@
 
 #include <cstdint>
 
+#include "vcs_mod_api.h"
+
 namespace vcs::aimwalk
 {
     void registerSettings();
@@ -26,6 +28,9 @@ namespace vcs::aimwalk
     // Game thread, the player's bones built for the draw (before first person's viewmodel): while moving and aiming, the
     // upper body held in the aim pose noted standing (the walk's legs and hips kept).
     void applyBones(uint8_t *ram, uint32_t ped, uint32_t bones);
+
+    // Game thread, every camera update (a guest context at a function's entry): the strafe anims let go after the aim.
+    void tick(uint8_t *ram, VcsGuestContext *ctx, void *runtime);
 
     // The setting (camera.aim_walk).
     bool enabled();

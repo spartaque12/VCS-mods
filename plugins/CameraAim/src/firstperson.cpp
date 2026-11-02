@@ -934,6 +934,7 @@ namespace vcs::firstperson
             }
             const bool ours = update(rdram, cam);
             viewmodel::animate(rdram, ctx, runtime); // the aim raise's anim (viewmodel.h)
+            aimwalk::tick(rdram, ctx, runtime);      // the strafe anims let go (aimwalk.h)
             if (!ours)
                 return g_origHeight(rdram, ctx, runtime);
             // first person's view noted for setFov: switching modes (on foot <-> vehicle) CCamera blends the old camera

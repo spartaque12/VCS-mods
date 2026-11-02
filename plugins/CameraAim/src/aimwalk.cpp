@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 #include <string>
 
 namespace vcs::aimwalk
@@ -121,15 +122,130 @@ namespace vcs::aimwalk
             mod::setGpr32(ctx, 2, static_cast<uint32_t>(static_cast<int32_t>(std::lround(y * 128.0f))));
             mod::setPc(ctx, mod::gpr32(ctx, 31));
         }
-        // the run-around itself (also from the scopes, below): the stick above while it runs for the aim
+        // a call into the game from a hook's entry (registers and pc put back); v0
+        uint32_t callGuest(VcsGuestFn fn, uint32_t address, uint8_t *rdram, VcsGuestContext *ctx, void *runtime,
+                           std::initializer_list<uint32_t> args, float f12 = 0.0f)
+        {
+            uint8_t gprs[32 * 16];
+            float fprs[32];
+            uint32_t pc;
+            uint8_t *bytes = mod::ctxBytes(ctx);
+            std::memcpy(gprs, bytes + mod::api->ctx_gpr_offset, sizeof(gprs));
+            std::memcpy(fprs, mod::fpr(ctx), sizeof(fprs));
+            std::memcpy(&pc, bytes + mod::api->ctx_pc_offset, 4);
+            int reg = 4;
+            for (uint32_t a : args)
+                mod::setGpr32(ctx, reg++, a);
+            mod::fpr(ctx)[12] = f12;
+            mod::setGpr32(ctx, 31, pc);
+            mod::setPc(ctx, address);
+            fn(rdram, ctx, runtime);
+            const uint32_t v0 = mod::gpr32(ctx, 2);
+            std::memcpy(bytes + mod::api->ctx_gpr_offset, gprs, sizeof(gprs));
+            std::memcpy(mod::fpr(ctx), fprs, sizeof(fprs));
+            std::memcpy(bytes + mod::api->ctx_pc_offset, &pc, 4);
+            return v0;
+        }
+
+        // The legs: the run-around plays only the forward walk / run (its strafe anims never start in VCS), so the game's
+        // own walk / run back, left and right (resident; assoc groups 0x35 / 0x36 / 0x37, anim id 2 walk, 4 run - the
+        // templates' +0x30 field) are added (CAnimManager AddAnimation FUN_00215928: BlendAnimation FUN_00215868 blends
+        // every other anim out - the player fell) and weighted by the stick's direction: each one's blend amount its share
+        // over the forward anim's (at 1; the anim system normalises the sum). An id is shared by every group's walk, so
+        // the associations are ours to track (checked by their group / id field, +0x30), and blended out (freed when out)
+        // once the stick lets go or the aim ends.
+        constexpr uint32_t kAddAnimation = 0x00215928u, kPedClump = 0x50u;
+        constexpr uint32_t kAssocFlags = 0x08u, kAssocBlend = 0x10u, kAssocDelta = 0x24u, kAssocGroupId = 0x30u;
+        constexpr uint32_t kStrafeGroups[3] = {0x35u, 0x36u, 0x37u}; // back, left, right
+        constexpr uint32_t kWalkId = 2u, kRunId = 4u;
+        VcsGuestFn g_addAnimation = nullptr;
+        uint32_t g_assoc[3][2] = {}; // ours: [direction][walk, run]
+        std::atomic<uint32_t> g_legs{0};
+        bool g_legsOn = false;
+
+        void wrf32(uint8_t *ram, uint32_t a, float v) { std::memcpy(ram + (a & kRamMask), &v, 4); }
+        float rdf32(const uint8_t *ram, uint32_t a)
+        {
+            float v;
+            std::memcpy(&v, ram + (a & kRamMask), 4);
+            return v;
+        }
+
+        void legs(uint8_t *rdram, VcsGuestContext *ctx, void *runtime, uint32_t ped, bool want)
+        {
+            if (!g_addAnimation)
+                return;
+            const uint32_t clump = rd32(rdram, ped + kPedClump);
+            float x = 0.0f, y = 0.0f;
+            if (want && clump)
+                aimStick(x, y);
+            const float mag = std::sqrt(x * x + y * y);
+            const bool sprint = (mod::lastPad().buttons & kCross) != 0;
+            float w[3] = {0.0f, 0.0f, 0.0f}, ahead = 1.0f;
+            if (mag > 0.05f)
+            {
+                const float r = x / mag, f = -y / mag;
+                ahead = std::max(f, 0.0f);
+                w[0] = std::max(-f, 0.0f);
+                w[1] = std::max(-r, 0.0f);
+                w[2] = std::max(r, 0.0f);
+            }
+            if (!g_legsOn && w[0] + w[1] + w[2] <= 0.0f)
+                return;
+            bool any = false;
+            for (int i = 0; i < 3; ++i)
+                for (int run = 0; run < 2; ++run)
+                {
+                    const uint32_t id = run ? kRunId : kWalkId, tag = kStrafeGroups[i] << 16 | id;
+                    uint32_t &assoc = g_assoc[i][run];
+                    if (assoc && (rd32(rdram, assoc + kAssocGroupId) & 0xFFFFFFu) != tag)
+                        assoc = 0; // freed by the game since
+                    const bool mine = w[i] > 0.01f && (run == 1) == sprint;
+                    if (mine)
+                    {
+                        if (!assoc || rdf32(rdram, assoc + kAssocDelta) < 0.0f)
+                        {
+                            assoc = callGuest(g_addAnimation, kAddAnimation, rdram, ctx, runtime, {ped, clump, kStrafeGroups[i], id});
+                            if (assoc && (rd32(rdram, assoc + kAssocGroupId) & 0xFFFFFFu) != tag)
+                                assoc = 0;
+                            if (assoc)
+                                wrf32(rdram, assoc + kAssocBlend, 0.0f);
+                        }
+                        if (assoc)
+                        {
+                            // eased toward its share over the forward anim's (at 1): w / ahead, the sum normalised
+                            const float want = std::min(w[i] / std::max(ahead, 0.05f), 20.0f);
+                            const float now = rdf32(rdram, assoc + kAssocBlend);
+                            wrf32(rdram, assoc + kAssocBlend, now + (want - now) * 0.35f);
+                            wrf32(rdram, assoc + kAssocDelta, 0.0f);
+                            any = true;
+                        }
+                    }
+                    else if (assoc && rdf32(rdram, assoc + kAssocDelta) >= 0.0f)
+                    {
+                        const uint32_t flags = rd32(rdram, assoc + kAssocFlags) | 4u; // freed once out
+                        std::memcpy(rdram + ((assoc + kAssocFlags) & kRamMask), &flags, 4);
+                        wrf32(rdram, assoc + kAssocBlend, std::min(rdf32(rdram, assoc + kAssocBlend), 1.0f));
+                        wrf32(rdram, assoc + kAssocDelta, -8.0f);
+                        assoc = 0;
+                    }
+                }
+            g_legsOn = any;
+            if (any)
+                ++g_legs;
+        }
+        // the run-around itself (also from the scopes, below): the stick above while it runs for the aim, the legs after it
         VCS_GUEST_CC void runAroundHook(uint8_t *rdram, VcsGuestContext *ctx, void *runtime)
         {
             const uint32_t ped = mod::gpr32(ctx, 4);
             g_inRunAround = ped && ped == rd32(rdram, kPlayerPed) && aiming(rdram);
             if (g_inRunAround)
                 g_runAroundFrame = rd32(rdram, 0x004CD124u);
+            const bool forAim = g_inRunAround;
             g_origRunAroundHook(rdram, ctx, runtime);
             g_inRunAround = false;
+            if (ped && ped == rd32(rdram, kPlayerPed))
+                legs(rdram, ctx, runtime, ped, forAim);
         }
         // CPhysical::ApplyMoveSpeed (FUN_00348098, a0 the entity: position += speed x step): the run-around's anims
         // move him ahead for a pure left / right stick (no side step at 90 degrees), so while the aim walks the player's
@@ -137,6 +253,7 @@ namespace vcs::aimwalk
         // kept - every direction moves where it is pushed.
         constexpr uint32_t kApplyMoveSpeed = 0x00348098u, kPedRotation = 0x8E0u, kPedMoveSpeedX = 0x140u;
         VcsGuestFn g_origApplyMove = nullptr;
+        constexpr float kAimWalk = 1.6f, kAimRun = 4.5f; // m/s
         std::atomic<uint32_t> g_steered{0};
         VCS_GUEST_CC void applyMoveSpeed(uint8_t *rdram, VcsGuestContext *ctx, void *runtime)
         {
@@ -147,8 +264,13 @@ namespace vcs::aimwalk
                 aimStick(x, y);
                 float v[2];
                 std::memcpy(v, rdram + ((ent + kPedMoveSpeedX) & kRamMask), 8);
-                const float speed = std::sqrt(v[0] * v[0] + v[1] * v[1]), mag = std::sqrt(x * x + y * y);
-                if (speed > 1e-4f && mag > 0.05f)
+                const float animSpeed = std::sqrt(v[0] * v[0] + v[1] * v[1]), mag = std::sqrt(x * x + y * y);
+                // the side / back anims carry no root motion the game turns into speed: a walk / run's own pace (m/s / 50 per
+                // step), by the stick's share of the walk; the forward anim's when larger (its stride)
+                const bool sprint = (mod::lastPad().buttons & kCross) != 0;
+                (void)animSpeed;
+                const float speed = (sprint ? kAimRun : kAimWalk) / 50.0f * std::min(mag / 0.45f, 1.0f);
+                if (mag > 0.05f)
                 {
                     float h;
                     std::memcpy(&h, rdram + ((ent + kPedRotation) & kRamMask), 4);
@@ -163,26 +285,6 @@ namespace vcs::aimwalk
             }
             return g_origApplyMove(rdram, ctx, runtime);
         }
-        // a call into the game from a hook's entry (registers and pc put back)
-        void callGuest(VcsGuestFn fn, uint32_t address, uint8_t *rdram, VcsGuestContext *ctx, void *runtime, uint32_t a0, uint32_t a1)
-        {
-            uint8_t gprs[32 * 16];
-            float fprs[32];
-            uint32_t pc;
-            uint8_t *bytes = mod::ctxBytes(ctx);
-            std::memcpy(gprs, bytes + mod::api->ctx_gpr_offset, sizeof(gprs));
-            std::memcpy(fprs, mod::fpr(ctx), sizeof(fprs));
-            std::memcpy(&pc, bytes + mod::api->ctx_pc_offset, 4);
-            mod::setGpr32(ctx, 4, a0);
-            mod::setGpr32(ctx, 5, a1);
-            mod::setGpr32(ctx, 31, pc);
-            mod::setPc(ctx, address);
-            fn(rdram, ctx, runtime);
-            std::memcpy(bytes + mod::api->ctx_gpr_offset, gprs, sizeof(gprs));
-            std::memcpy(mod::fpr(ctx), fprs, sizeof(fprs));
-            std::memcpy(bytes + mod::api->ctx_pc_offset, &pc, 4);
-        }
-
         void scopeControl(VcsGuestFn orig, uint8_t *rdram, VcsGuestContext *ctx, void *runtime)
         {
             const uint32_t ped = mod::gpr32(ctx, 4), pad = mod::gpr32(ctx, 5);
@@ -190,7 +292,7 @@ namespace vcs::aimwalk
                 scoped(rdram, ped))
             {
                 ++g_scope;
-                callGuest(g_runAround, kRunAround, rdram, ctx, runtime, ped, pad);
+                callGuest(g_runAround, kRunAround, rdram, ctx, runtime, {ped, pad});
             }
             return orig(rdram, ctx, runtime);
         }
@@ -327,6 +429,14 @@ namespace vcs::aimwalk
 
     bool enabled() { return g_on.load(std::memory_order_relaxed); }
 
+    void tick(uint8_t *ram, VcsGuestContext *ctx, void *runtime)
+    {
+        // the aim let go (the run-around no longer runs for it): the strafe anims blended out
+        const uint32_t ped = rd32(ram, kPlayerPed);
+        if (g_legsOn && ped && rd32(ram, 0x004CD124u) - g_runAroundFrame > 1u)
+            legs(ram, ctx, runtime, ped, false);
+    }
+
     void registerSettings()
     {
         using namespace mod;
@@ -357,6 +467,7 @@ namespace vcs::aimwalk
         mod::api->replace_function(kUsing3rdPersonMouseCam, &mouseCam);
         g_origSniper = mod::api->lookup_function(kSniperControl);
         g_origRocket = mod::api->lookup_function(kRocketControl);
+        g_addAnimation = mod::api->lookup_function(kAddAnimation);
         g_origLeftRight = mod::api->lookup_function(kWalkLeftRight);
         g_origUpDown = mod::api->lookup_function(kWalkUpDown);
         g_origRunAroundHook = mod::api->lookup_function(kRunAround);
@@ -377,9 +488,10 @@ namespace vcs::aimwalk
         }
         mod::addCommand("aimwalk", [](const std::string &, mod::Reply reply) {
             char text[160];
-            std::snprintf(text, sizeof(text), "ok on=%d strafe=%u scope=%u steered=%u kept=%u pose=%d", g_on ? 1 : 0, g_strafe.load(), g_scope.load(), g_steered.load(),
+            std::snprintf(text, sizeof(text), "ok on=%d strafe=%u scope=%u steered=%u legs=%u kept=%u pose=%d", g_on ? 1 : 0, g_strafe.load(), g_scope.load(), g_steered.load(), g_legs.load(),
                           g_kept.load(), g_poseValid ? 1 : 0);
-            reply(text);
+            std::string s = text;
+            reply(s);
         });
     }
 }
