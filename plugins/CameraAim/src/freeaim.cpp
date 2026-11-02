@@ -2,6 +2,7 @@
 #include "freeaim.h"
 
 #include "mod.h"
+#include "viewmodel.h"
 
 #include "imgui.h"
 
@@ -68,7 +69,19 @@ namespace vcs::freeaim
         constexpr float kDotRadius = 1.4f, kDotOutline = 1.25f;
         constexpr int kDotAlpha = 255, kDotOutlineAlpha = 192;
 
-        VcsGuestFn g_origLockOn = nullptr, g_origLineOfSight = nullptr;
+        VcsGuestFn g_origLockOn = nullptr, g_origLineOfSight = nullptr, g_origBulletImpact = nullptr, g_origAfterShot = nullptr;
+        constexpr uint32_t kBulletImpact = 0x002C6460u; // CWeapon::DoBulletImpact(weapon, shooter, victim, source* a3, end* t0, ..)
+        // the first call after FireInstantHit's line of sight that takes its start (a0 = start, a1 = end; 0x2C4F44 and
+        // the others) - its gun smoke / flash puff at the start: the muzzle goes back from here on
+        constexpr uint32_t kAfterShot = 0x002EB720u;
+        // a first-person shot moved onto the view's line: its start (FireInstantHit's stack) and the viewmodel's muzzle,
+        // given back to DoBulletImpact - the flash and tracer start at the drawn gun, not at the eyes' line
+        struct MuzzleShot
+        {
+            uint32_t start = 0, frame = 0;
+            float muzzle[3] = {};
+        } g_muzzleShot;
+        uint32_t g_muzzleShots = 0;
         std::atomic<bool> g_installed{false};
         std::atomic<bool> g_enabled{false};
         std::atomic<int> g_fov{60};
@@ -246,8 +259,39 @@ namespace vcs::freeaim
                     wrf(rdram, end + 4u * i, p + d[i] * range);
                 }
                 ++g_shots;
+                // the trace stays on the view's line (the dot's hit); the effects get the drawn muzzle back below
+                g_muzzleShot = {};
+                if (instant && viewmodel::muzzle(rdram, g_muzzleShot.muzzle))
+                {
+                    g_muzzleShot.start = start;
+                    g_muzzleShot.frame = rd32(rdram, kFrameCounter);
+                }
             }
             return g_origLineOfSight(rdram, ctx, runtime);
+        }
+
+        // CWeapon::DoBulletImpact from FireInstantHit (0x2C51FC): the source (a3, FireInstantHit's start - on the view's
+        // line since lineOfSight) set to the viewmodel's muzzle for its flash, tracer and smoke. Before the original only.
+        void muzzleBack(uint8_t *rdram, uint32_t source)
+        {
+            if (g_muzzleShot.start && source == g_muzzleShot.start && rd32(rdram, kFrameCounter) - g_muzzleShot.frame <= 1u)
+            {
+                for (int i = 0; i < 3; ++i)
+                    wrf(rdram, source + 4u * i, g_muzzleShot.muzzle[i]);
+                ++g_muzzleShots;
+            }
+            g_muzzleShot.start = 0;
+        }
+        VCS_GUEST_CC void bulletImpact(uint8_t *rdram, VcsGuestContext *ctx, void *runtime)
+        {
+            muzzleBack(rdram, mod::gpr32(ctx, 7));
+            return g_origBulletImpact(rdram, ctx, runtime);
+        }
+        VCS_GUEST_CC void afterShot(uint8_t *rdram, VcsGuestContext *ctx, void *runtime)
+        {
+            if (g_muzzleShot.start && mod::gpr32(ctx, 4) == g_muzzleShot.start)
+                muzzleBack(rdram, g_muzzleShot.start);
+            return g_origAfterShot(rdram, ctx, runtime);
         }
 
         // One disc of DotCrosshair: a 32-segment fan, no antialiasing (its soft edge is the next disc out).
@@ -303,13 +347,19 @@ namespace vcs::freeaim
             return;
         mod::api->replace_function(kFindLockOnTarget, &findLockOn);
         mod::api->replace_function(kLineOfSight, &lineOfSight);
+        g_origBulletImpact = mod::api->lookup_function(kBulletImpact);
+        if (g_origBulletImpact)
+            mod::api->replace_function(kBulletImpact, &bulletImpact);
+        g_origAfterShot = mod::api->lookup_function(kAfterShot);
+        if (g_origAfterShot)
+            mod::api->replace_function(kAfterShot, &afterShot);
         g_installed = true;
         // freeaim -> ok enabled= posed= ray= driveby= shots= retraces= crosshair= (tests)
         mod::addCommand("freeaim", [](const std::string &, mod::Reply reply) {
             char text[192];
-            std::snprintf(text, sizeof(text), "ok enabled=%d posed=%d ray=%d driveby=%d shots=%u retraces=%u crosshair=%d",
+            std::snprintf(text, sizeof(text), "ok enabled=%d posed=%d ray=%d driveby=%d shots=%u retraces=%u crosshair=%d muzzle=%u",
                           g_enabled ? 1 : 0, g_posed ? 1 : 0, g_ray.valid ? 1 : 0, g_driveBy ? 1 : 0, g_shots, g_retraces,
-                          g_crosshair ? 1 : 0);
+                          g_crosshair ? 1 : 0, g_muzzleShots);
             reply(text);
         });
     }

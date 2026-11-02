@@ -342,6 +342,24 @@ namespace vcs::viewmodel
             default: return {0.0f, 0.0f};
             }
         }
+        // The muzzle's middle in the hand's frame (m; the converted SA models: their DFFs' front end, the converter's
+        // offset added) - the shot's flash and tracer start there in first person (freeaim.cpp). Others: along the bore.
+        bool muzzlePoint(int type, float out[3])
+        {
+            static const float k[][4] = {{19, 0.317f, 0.012f, 0.113f}, {20, 0.354f, 0.021f, 0.108f}, {21, 0.932f, -0.047f, 0.202f},
+                                         {22, 0.737f, -0.030f, 0.217f}, {23, 0.612f, 0.029f, 0.196f}, {24, 0.398f, 0.005f, 0.146f},
+                                         {25, 0.288f, 0.042f, 0.127f}, {27, 0.486f, -0.011f, 0.141f}, {28, 0.790f, -0.030f, 0.099f},
+                                         {29, 0.783f, -0.021f, 0.141f}};
+            for (const auto &e : k)
+                if (static_cast<int>(e[0]) == type)
+                {
+                    out[0] = e[1], out[1] = e[2], out[2] = e[3];
+                    return true;
+                }
+            return false;
+        }
+        float g_muzzleView[3] = {};  // the drawn muzzle in the view's frame (apply), 0 frame: none
+        uint32_t g_muzzleFrame = 0;
         std::atomic<bool> g_boreTune{false};
         std::atomic<float> g_boreTuned[2] = {{0.0f}, {0.0f}};
         std::atomic<bool> g_saHolds{true}; // camera.fp_sa_hands
@@ -1105,6 +1123,23 @@ namespace vcs::viewmodel
                 writeBone(ram, bones, 7 + i, origLeft[i], left[i], w);
         }
         g_twoHanded = twoHanded;
+        // the muzzle as drawn (our hand, the pose mostly ours): in the view's frame, for the shot's flash (muzzle())
+        g_muzzleFrame = 0;
+        if (w > 0.5f)
+        {
+            float m[3];
+            if (!muzzlePoint(g_type, m))
+            {
+                Bore b = bore(g_type); // along the bore, 0.5 m out, 0.1 m over the grip
+                const float l = std::sqrt(1.0f + b.left * b.left + b.up * b.up);
+                m[0] = 0.5f / l, m[1] = 0.5f * b.left / l, m[2] = 0.5f * b.up / l + 0.1f;
+            }
+            float wm[3];
+            for (int i = 0; i < 3; ++i)
+                wm[i] = right[3].p[i] + right[3].a[0][i] * m[0] + right[3].a[1][i] * m[1] + right[3].a[2][i] * m[2];
+            toView(wm, true, g_muzzleView);
+            g_muzzleFrame = rd32(ram, kFrameCounter);
+        }
         float handView[3], barrel[3];
         {
             std::lock_guard<std::mutex> lock(g_statusMutex);
@@ -1224,6 +1259,14 @@ namespace vcs::viewmodel
     }
 
     bool raised() { return g_raised; }
+
+    bool muzzle(const uint8_t *ram, float out[3])
+    {
+        if (!g_active || !g_muzzleFrame || rd32(ram, kFrameCounter) - g_muzzleFrame > 2u)
+            return false;
+        toWorld(g_muzzleView, true, out); // with this update's view: the gun moves with it
+        return true;
+    }
 
     bool aimingFreely(const uint8_t *ram)
     {

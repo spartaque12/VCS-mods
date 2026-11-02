@@ -61,6 +61,10 @@ namespace vcs::viewmodel
     // Game thread: the aim raise holds the gun's fire anim (free aim, a torso-aimed gun).
     bool raised();
 
+    // Game thread: the viewmodel's muzzle in the world (the last draw's, carried with the view), while it holds the gun
+    // in view - free aim starts the shot's flash and tracer there (freeaim.cpp).
+    bool muzzle(const uint8_t *ram, float out[3]);
+
     // Install (CameraAim's): the game's anim functions the aim raise calls; false leaves it off.
     bool installAnims();
 }
