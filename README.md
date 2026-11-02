@@ -39,11 +39,12 @@ The camera and aiming mods of the port, together because they share one camera h
 - **Manual drive-by** (SA's Manual Driveby Remake): in a vehicle with an SMG, L2 / R2 bring a camera over the vehicle to
   that side, the mouse aims within the window's arc and Circle fires at the dot.
 - **Field of view** of the game's own cameras, on foot and in vehicles (the car camera's widening at speed kept).
-- **Gun hold in first person**: by default the viewmodel - both arms hold the gun in view as in San Andreas' first person
-  (right hand on the grip, left hand under the handguard, forearms from the bottom of the picture), the barrel's line
-  always running into the crosshair's dot (each gun model's bore measured; any pitch, yaw, while turning), lowered a
-  little until you aim; its place and roll per kind of gun are F2 rows. "As in third person" (the body's own animation holds the gun, up to the eye only while aiming)
-  and the game's arms stay selectable.
+- **Gun hold in first person**: by default as in third person - the body's own animation holds the gun (the same
+  walk, run and idle as third person), and only while you aim the viewmodel eases in: both arms hold the gun in view as
+  in San Andreas' first person (right hand on the grip, left hand under the handguard, forearms from the bottom of the
+  picture), the barrel's line always running into the crosshair's dot (each gun model's bore measured; any pitch, yaw,
+  while turning); its place and roll per kind of gun are F2 rows. The viewmodel all the time and the game's arms stay
+  selectable.
 - **Aim raise**: free-aiming a rifle, shotgun, SMG or heavy gun plays the game's own aim pose (the gun's fire anim held
   at its aim point, as a lock-on does), in third and first person; VCS kept it at the hip until fired.
 - **Walk while aiming**: free aim and the sniper / rocket views no longer root you: strafe facing the aim (the
@@ -65,7 +66,7 @@ Settings (F2, Game page; keys in `vcs.ini`):
 | `camera.fov_foot` / `camera.fov_vehicle` | Field of view: on foot / vehicles | 70 (50..110) |
 | `camera.free_aim` | Free aim (no lock-on) | off (`VCS_FREEAIM=0/1`) |
 | `camera.free_aim_fov` | Aim field of view | 60 (40..80) |
-| `camera.fp_hold` | Gun hold (first person) | As in third person (0); Viewmodel, SA style (1, the default); Game's arms (2) (`VCS_FP_HOLD`) |
+| `camera.fp_hold` | Gun hold (first person) | As in third person, the viewmodel only while aiming (0, the default); Viewmodel all the time, SA style (1); Game's arms (2) (`VCS_FP_HOLD`) |
 | `camera.vm_<kind>_right` / `_ahead` / `_up` / `_roll` | Pistols / SMGs / Rifles / Shotguns / Heavy guns: right (x), ahead (y), up (z), roll (w) | the viewmodel's right hand per kind of gun (`pistol`, `smg`, `rifle`, `shotgun`, `heavy`), cm from the eyes (17 / 36 / -22; heavy 30 / 40 / -24) and the roll about the barrel in degrees (0); the barrel stays on the dot whatever they are |
 | `camera.vm_reset` | Reset the gun positions | a button: every kind's place and roll back to the defaults |
 | `camera.aim_raise` | Raise the gun while aiming | on (`VCS_AIM_RAISE`) |
