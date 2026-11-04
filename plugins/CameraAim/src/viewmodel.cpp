@@ -811,6 +811,18 @@ namespace vcs::viewmodel
             return o;
         }
 
+        // the reload's placing: the game's arms, in the chest's frame, onto the view's (noted when a reload starts)
+        constexpr uint32_t kChestBone = 3;
+        Bone g_reloadC = {};
+        bool g_reloadCValid = false;
+        Bone identity()
+        {
+            Bone o = {};
+            for (int k = 0; k < 3; ++k)
+                o.a[k][k] = 1.0f;
+            return o;
+        }
+
         // Two-bone IK: the upper arm (from the shoulder), the forearm, the hand put at `hand` (a pose), the elbow bent
         // toward `pole` (world). Out of reach the clavicle and shoulder slide toward it. The fingers follow the hand.
         void reach(Bone (&arm)[5], const Bone &hand, const float pole[3])
@@ -1117,13 +1129,60 @@ namespace vcs::viewmodel
         }
 
         float w =g_blend * g_blend * (3.0f - 2.0f * g_blend);
-        if (g_body) // the aim's share, or the reload's (its pose lowered and tipped toward the left hand)
-            w *= std::max(g_ads * g_ads * (3.0f - 2.0f * g_ads), g_reload * g_reload * (3.0f - 2.0f * g_reload));
+        if (g_body) // the aim's share
+            w *= g_ads * g_ads * (3.0f - 2.0f * g_ads);
         for (uint32_t i = 0; i < 5; ++i)
         {
             writeBone(ram, bones, 12 + i, origRight[i], right[i], w);
             if (twoHanded)
                 writeBone(ram, bones, 7 + i, origLeft[i], left[i], w);
+        }
+        // Reloading: the game's own reload anim - both hands (and the gun in the right one) carried into view as one
+        // piece, their motion about the chest kept, placed so the right hand, where the anim had it when the reload
+        // started, is at the gun's place in view; the arms reach them from the shoulders under the picture (IK, as
+        // aiming). (A fixed pose had replaced the anim: the user's "reload anims are broken".)
+        const float wr = g_blend * g_blend * (3.0f - 2.0f * g_blend) * g_reload * g_reload * (3.0f - 2.0f * g_reload);
+        if (g_reload <= 0.0f)
+            g_reloadCValid = false;
+        if (wr > 0.0f)
+        {
+            Bone view = {};
+            for (int i = 0; i < 3; ++i)
+            {
+                view.a[0][i] = g_view.r[i];
+                view.a[1][i] = g_view.f[i];
+                view.a[2][i] = g_view.u[i];
+                view.p[i] = g_view.src[i];
+            }
+            const Bone id = identity(), chest = readBone(ram, bones, kChestBone);
+            if (!g_reloadCValid)
+            {
+                // C = the target in the view's frame after the anim's hand in the chest's frame, undone
+                g_reloadC = carry(id, carry(origRight[3], chest, id), carry(target, view, id));
+                g_reloadCValid = true;
+            }
+            for (int side = 0; side < 2; ++side)
+            {
+                Bone arm[5];
+                for (int i = 0; i < 5; ++i)
+                    arm[i] = side ? origLeft[i] : origRight[i];
+                const Bone hand = carry(carry(carry(arm[3], chest, id), id, g_reloadC), id, view);
+                float at[3], d[3];
+                toWorld(side ? leftShoulder : rightShoulder, true, at);
+                sub(at, arm[1].p, d);
+                for (Bone &bn : arm)
+                    for (int i = 0; i < 3; ++i)
+                        bn.p[i] += d[i];
+                float pole[3];
+                const float polev[3] = {side ? -kPoleOut : kPoleOut, -0.2f, -1.0f};
+                toWorld(polev, false, pole);
+                reach(arm, hand, pole);
+                for (uint32_t i = 0; i < 5; ++i)
+                {
+                    const uint32_t b = (side ? 7u : 12u) + i;
+                    writeBone(ram, bones, b, readBone(ram, bones, b), arm[i], wr);
+                }
+            }
         }
         g_twoHanded = twoHanded;
         // the muzzle as drawn (our hand, the pose mostly ours): in the view's frame, for the shot's flash (muzzle())
