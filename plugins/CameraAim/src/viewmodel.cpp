@@ -54,7 +54,7 @@ namespace vcs::viewmodel
         // at rest (not aiming): the hand lower and back, the barrel still on the dot; raised while R1 / the right mouse
         // button aims or the gun fires, eased like UltimateFP's ADS (200 ms up, 180 ms down)
         constexpr float kRestOffset[3] = {0.0f, -0.03f, -0.04f}; // m
-        constexpr float kReloadOffset[3] = {-0.06f, -0.04f, 0.07f}, kReloadPitch = 0.25f, kReloadRoll = 0.7f; // m, rad
+        constexpr float kReloadOffset[3] = {0.0f, 0.0f, 0.0f}, kReloadPitch = 0.15f, kReloadRoll = 0.35f; // m, rad
         constexpr float kReloadEase = 0.15f; // s
         constexpr float kAdsUp = 0.20f, kAdsDown = 0.18f, kAdsUpFiring = 0.08f;                          // s
         constexpr float kRecoilBack = 0.04f, kRecoilUp = 0.012f, kRecoilTurn = 0.10f, kRecoilTime = 0.07f; // m, m, rad, s
@@ -813,12 +813,6 @@ namespace vcs::viewmodel
             return o;
         }
 
-        // the reload's placing: the game's arms, in the chest's frame, onto the view's (noted when a reload starts)
-        constexpr uint32_t kChestBone = 3;
-        Bone g_reloadC = {};  // the gun's place in the view's frame, the reload's start
-        Bone g_reloadH0 = {}; // the anim's right hand in the chest's frame then
-        bool g_reloadCValid = false;
-        constexpr float kReloadMove = 0.0f; // the anim's hand movement kept: none, the gun stays at its place (its turns all)
         Bone identity()
         {
             Bone o = {};
@@ -1141,40 +1135,17 @@ namespace vcs::viewmodel
             if (twoHanded)
                 writeBone(ram, bones, 7 + i, origLeft[i], left[i], w);
         }
-        // Reloading: the game's own reload anim - both hands (and the gun in the right one) carried into view as one
-        // piece, their motion about the chest kept, placed so the right hand, where the anim had it when the reload
-        // started, is at the gun's place in view; the arms reach them from the shoulders under the picture (IK, as
-        // aiming). (A fixed pose had replaced the anim: the user's "reload anims are broken".)
-        // (the viewmodel hold only: as in third person the body's own reload anim plays untouched, seen looking down, as
-        // in the user's SA video)
+        // Reloading (every reload, manual or not, aiming or not - the user's SA clip; the viewmodel hold too): the gun
+        // stays at its place in view, tipped by the reload pose (target: kReloadPitch / kReloadRoll), and the left hand
+        // is where the IWP reload anim has it from the right hand - the magazine, the handguard. Nothing is taken from
+        // the pose the reload starts in (from rest that was the hip hold: the gun turned off and the forearm stood up).
         if (g_reload <= 0.0f && !reload::reloading(ram, ped))
             g_reloadFromAim = false;
         const float wr = g_body && !g_reloadFromAim ? 0.0f : g_blend * g_blend * (3.0f - 2.0f * g_blend) * g_reload * g_reload * (3.0f - 2.0f * g_reload);
-        if (g_reload <= 0.0f)
-            g_reloadCValid = false;
         if (wr > 0.0f)
         {
-            Bone view = {};
-            for (int i = 0; i < 3; ++i)
-            {
-                view.a[0][i] = g_view.r[i];
-                view.a[1][i] = g_view.f[i];
-                view.a[2][i] = g_view.u[i];
-                view.p[i] = g_view.src[i];
-            }
-            const Bone id = identity(), chest = readBone(ram, bones, kChestBone);
-            if (!g_reloadCValid)
-            {
-                g_reloadC = carry(target, view, id);
-                g_reloadH0 = carry(origRight[3], chest, id);
-                g_reloadCValid = true;
-            }
-            // the right hand: at the gun's place, turned as the anim turns it since the start (and a share of its
-            // movement); the left: where the anim has it from the right hand (the magazine, the handguard)
-            Bone d = carry(carry(origRight[3], chest, id), g_reloadH0, id);
-            for (float &v : d.p)
-                v *= kReloadMove;
-            const Bone rightHand = carry(carry(d, id, g_reloadC), id, view);
+            const Bone id = identity();
+            const Bone &rightHand = target;
             const Bone leftHand = carry(carry(origLeft[3], origRight[3], id), id, rightHand);
             for (int side = 0; side < 2; ++side)
             {
