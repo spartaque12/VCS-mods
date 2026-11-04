@@ -665,6 +665,10 @@ namespace vcs::viewmodel
         // hold otherwise
         g_body = g_hold.load(std::memory_order_relaxed) == kHoldBody && g_fpAimEye.load(std::memory_order_relaxed);
         const bool armed = first && ped && held(type) && armsState(rd32(ram, ped + kPedState));
+        // a reload, manual or not, aiming or not: the IWP reload anim in view at the gun's place (the user's SA clip and
+        // screenshot; the body's anim alone is below the picture)
+        if (armed && g_body && !g_reloadFromAim && g_reload <= 0.0f && reload::reloading(ram, ped))
+            g_reloadFromAim = true;
         const bool want = armed && (g_enabled.load(std::memory_order_relaxed) ||
                                     (g_body && (aiming || lockedOn || g_ads > 0.0f || g_reloadFromAim)));
         g_dt = std::clamp(rdf(ram, kTimeStep), 0.0f, 3.0f) / 50.0f;
@@ -731,9 +735,6 @@ namespace vcs::viewmodel
             const bool firing = state == kStateAttack || state == kStateFight || g_recoil > 0.05f;
             // reloading (the slot's state 2): down, whatever else
             const bool reloadingNow = reload::reloading(ram, ped);
-            // as in SA's first person: a reload started while the gun is up plays in view, at the aim's place
-            if (reloadingNow && !g_reloadFromAim && g_reload <= 0.0f && (aiming || lockedOn || g_ads > 0.5f))
-                g_reloadFromAim = true;
             g_reload = std::clamp(g_reload + (reloadingNow ? 1.0f : -1.0f) * g_dt / kReloadEase, 0.0f, 1.0f);
             // (as in third person: aiming only - hip fire is the body's fire anim, as third person's)
             const bool raise = (aiming || lockedOn || (firing && !g_body)) && !reloadingNow;
@@ -817,7 +818,7 @@ namespace vcs::viewmodel
         Bone g_reloadC = {};  // the gun's place in the view's frame, the reload's start
         Bone g_reloadH0 = {}; // the anim's right hand in the chest's frame then
         bool g_reloadCValid = false;
-        constexpr float kReloadMove = 0.35f; // the share of the anim's hand movement kept (its turns all)
+        constexpr float kReloadMove = 0.0f; // the anim's hand movement kept: none, the gun stays at its place (its turns all)
         Bone identity()
         {
             Bone o = {};
