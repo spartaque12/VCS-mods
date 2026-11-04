@@ -118,6 +118,7 @@ namespace vcs::viewmodel
         float g_pull = 0.0f;     // the gun drawn back this draw (m)
         float g_recoil = 0.0f;   // 1 at a shot, decaying
         float g_reload = 0.0f;   // 0 .. 1 the reload pose's share (the gun lower still, tipped in)
+        bool g_reloadFromAim = false; // the reload started with the gun up (as in third person: shown in view)
         float g_ads = 0.0f;      // 0 the gun at rest (low ready) .. 1 raised to the crosshair (aiming, firing)
         int32_t g_clip = -1;     // the gun's rounds in the clip, last update
         bool g_twoHanded = false; // the left hand on the gun too (status)
@@ -664,11 +665,8 @@ namespace vcs::viewmodel
         // hold otherwise
         g_body = g_hold.load(std::memory_order_relaxed) == kHoldBody && g_fpAimEye.load(std::memory_order_relaxed);
         const bool armed = first && ped && held(type) && armsState(rd32(ram, ped + kPedState));
-        // (as in third person: also while reloading - the body's reload anim is below the picture, the viewmodel's
-        // reload pose shows it, the user's "I don't see the reload anim")
-        const bool reloadingAny = armed && (reload::reloading(ram, ped) || g_reload > 0.0f);
         const bool want = armed && (g_enabled.load(std::memory_order_relaxed) ||
-                                    (g_body && (aiming || lockedOn || g_ads > 0.0f || reloadingAny)));
+                                    (g_body && (aiming || lockedOn || g_ads > 0.0f || g_reloadFromAim)));
         g_dt = std::clamp(rdf(ram, kTimeStep), 0.0f, 3.0f) / 50.0f;
         g_blend = std::clamp(g_blend + (want ? 1.0f : -1.0f) * g_dt / kBlendTime, 0.0f, 1.0f);
         g_active = (want || g_blend > 0.0f) && ped && held(type) && first;
@@ -733,6 +731,9 @@ namespace vcs::viewmodel
             const bool firing = state == kStateAttack || state == kStateFight || g_recoil > 0.05f;
             // reloading (the slot's state 2): down, whatever else
             const bool reloadingNow = reload::reloading(ram, ped);
+            // as in SA's first person: a reload started while the gun is up plays in view, at the aim's place
+            if (reloadingNow && !g_reloadFromAim && g_reload <= 0.0f && (aiming || lockedOn || g_ads > 0.5f))
+                g_reloadFromAim = true;
             g_reload = std::clamp(g_reload + (reloadingNow ? 1.0f : -1.0f) * g_dt / kReloadEase, 0.0f, 1.0f);
             // (as in third person: aiming only - hip fire is the body's fire anim, as third person's)
             const bool raise = (aiming || lockedOn || (firing && !g_body)) && !reloadingNow;
@@ -813,8 +814,10 @@ namespace vcs::viewmodel
 
         // the reload's placing: the game's arms, in the chest's frame, onto the view's (noted when a reload starts)
         constexpr uint32_t kChestBone = 3;
-        Bone g_reloadC = {};
+        Bone g_reloadC = {};  // the gun's place in the view's frame, the reload's start
+        Bone g_reloadH0 = {}; // the anim's right hand in the chest's frame then
         bool g_reloadCValid = false;
+        constexpr float kReloadMove = 0.35f; // the share of the anim's hand movement kept (its turns all)
         Bone identity()
         {
             Bone o = {};
@@ -1141,7 +1144,11 @@ namespace vcs::viewmodel
         // piece, their motion about the chest kept, placed so the right hand, where the anim had it when the reload
         // started, is at the gun's place in view; the arms reach them from the shoulders under the picture (IK, as
         // aiming). (A fixed pose had replaced the anim: the user's "reload anims are broken".)
-        const float wr = g_blend * g_blend * (3.0f - 2.0f * g_blend) * g_reload * g_reload * (3.0f - 2.0f * g_reload);
+        // (the viewmodel hold only: as in third person the body's own reload anim plays untouched, seen looking down, as
+        // in the user's SA video)
+        if (g_reload <= 0.0f && !reload::reloading(ram, ped))
+            g_reloadFromAim = false;
+        const float wr = g_body && !g_reloadFromAim ? 0.0f : g_blend * g_blend * (3.0f - 2.0f * g_blend) * g_reload * g_reload * (3.0f - 2.0f * g_reload);
         if (g_reload <= 0.0f)
             g_reloadCValid = false;
         if (wr > 0.0f)
@@ -1157,16 +1164,23 @@ namespace vcs::viewmodel
             const Bone id = identity(), chest = readBone(ram, bones, kChestBone);
             if (!g_reloadCValid)
             {
-                // C = the target in the view's frame after the anim's hand in the chest's frame, undone
-                g_reloadC = carry(id, carry(origRight[3], chest, id), carry(target, view, id));
+                g_reloadC = carry(target, view, id);
+                g_reloadH0 = carry(origRight[3], chest, id);
                 g_reloadCValid = true;
             }
+            // the right hand: at the gun's place, turned as the anim turns it since the start (and a share of its
+            // movement); the left: where the anim has it from the right hand (the magazine, the handguard)
+            Bone d = carry(carry(origRight[3], chest, id), g_reloadH0, id);
+            for (float &v : d.p)
+                v *= kReloadMove;
+            const Bone rightHand = carry(carry(d, id, g_reloadC), id, view);
+            const Bone leftHand = carry(carry(origLeft[3], origRight[3], id), id, rightHand);
             for (int side = 0; side < 2; ++side)
             {
                 Bone arm[5];
                 for (int i = 0; i < 5; ++i)
                     arm[i] = side ? origLeft[i] : origRight[i];
-                const Bone hand = carry(carry(carry(arm[3], chest, id), id, g_reloadC), id, view);
+                const Bone &hand = side ? leftHand : rightHand;
                 float at[3], d[3];
                 toWorld(side ? leftShoulder : rightShoulder, true, at);
                 sub(at, arm[1].p, d);
