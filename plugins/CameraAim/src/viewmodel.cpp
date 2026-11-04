@@ -54,7 +54,7 @@ namespace vcs::viewmodel
         // at rest (not aiming): the hand lower and back, the barrel still on the dot; raised while R1 / the right mouse
         // button aims or the gun fires, eased like UltimateFP's ADS (200 ms up, 180 ms down)
         constexpr float kRestOffset[3] = {0.0f, -0.03f, -0.04f}; // m
-        constexpr float kReloadOffset[3] = {0.0f, 0.0f, 0.0f}, kReloadPitch = 0.15f, kReloadRoll = 0.35f; // m, rad
+        constexpr float kReloadOffset[3] = {0.0f, 0.0f, 0.0f}, kReloadPitch = 0.0f, kReloadRoll = 0.0f; // m, rad
         constexpr float kReloadEase = 0.15f; // s
         constexpr float kAdsUp = 0.20f, kAdsDown = 0.18f, kAdsUpFiring = 0.08f;                          // s
         constexpr float kRecoilBack = 0.04f, kRecoilUp = 0.012f, kRecoilTurn = 0.10f, kRecoilTime = 0.07f; // m, m, rad, s
@@ -813,6 +813,10 @@ namespace vcs::viewmodel
             return o;
         }
 
+        // the reload's reference: the anim's right hand in the chest's frame once the reload anim has blended in
+        constexpr uint32_t kChestBone = 3;
+        Bone g_reloadH0 = {};
+        bool g_reloadH0Valid = false;
         Bone identity()
         {
             Bone o = {};
@@ -1136,16 +1140,30 @@ namespace vcs::viewmodel
                 writeBone(ram, bones, 7 + i, origLeft[i], left[i], w);
         }
         // Reloading (every reload, manual or not, aiming or not - the user's SA clip; the viewmodel hold too): the gun
-        // stays at its place in view, tipped by the reload pose (target: kReloadPitch / kReloadRoll), and the left hand
-        // is where the IWP reload anim has it from the right hand - the magazine, the handguard. Nothing is taken from
-        // the pose the reload starts in (from rest that was the hip hold: the gun turned off and the forearm stood up).
+        // stays at its place in view, turned as the IWP reload anim turns the right hand since it blended in (the
+        // reload pose's share reaching 1, ~0.15 s: the hold the reload starts from - the hip hold at rest - is not the
+        // reference, which turned the gun off), and the left hand is where the anim has it from the right hand.
         if (g_reload <= 0.0f && !reload::reloading(ram, ped))
             g_reloadFromAim = false;
+        if (!reload::reloading(ram, ped))
+            g_reloadH0Valid = false;
         const float wr = g_body && !g_reloadFromAim ? 0.0f : g_blend * g_blend * (3.0f - 2.0f * g_blend) * g_reload * g_reload * (3.0f - 2.0f * g_reload);
         if (wr > 0.0f)
         {
-            const Bone id = identity();
-            const Bone &rightHand = target;
+            const Bone id = identity(), chest = readBone(ram, bones, kChestBone);
+            const Bone handInChest = carry(origRight[3], chest, id);
+            if (!g_reloadH0Valid && g_reload >= 1.0f)
+            {
+                g_reloadH0 = handInChest;
+                g_reloadH0Valid = true;
+            }
+            Bone rightHand = target;
+            if (g_reloadH0Valid)
+            {
+                Bone d = carry(handInChest, g_reloadH0, id); // the turn since then, in the hand's frame (no movement)
+                d.p[0] = d.p[1] = d.p[2] = 0.0f;
+                rightHand = carry(d, id, target);
+            }
             const Bone leftHand = carry(carry(origLeft[3], origRight[3], id), id, rightHand);
             for (int side = 0; side < 2; ++side)
             {
